@@ -15,4 +15,11 @@ impl Config {
         let content = std::fs::read_to_string(path).context("Failed to read config file")?;
         toml::from_str(&content).context("Failed to parse config file")
     }
+
+    pub fn verify_config(&self) -> anyhow::Result<()> {
+        for token in &self.tokens {
+            token.verify_config()?;
+        }
+        Ok(())
+    }
 }

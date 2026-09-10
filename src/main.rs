@@ -32,7 +32,6 @@ async fn main() {
     if args.caddy {
         println!("forward_auth {} {{", args.listen);
         println!("    uri /verify");
-        println!("    header_up X-Forwarded-Uri {{uri}}");
         println!("}}");
         return;
     }
@@ -44,7 +43,13 @@ async fn main() {
     info!("Starting LLM Auth verifier");
 
     let config = match Config::load(args.tokens) {
-        Ok(c) => c,
+        Ok(c) => {
+            if let Err(e) = c.verify_config() {
+                error!("Invalid configuration: {e}");
+                std::process::exit(1);
+            }
+            c
+        }
         Err(e) => {
             error!("{e}");
             std::process::exit(1);

@@ -52,8 +52,12 @@ fn extract_api_key(headers: &HeaderMap) -> Option<(ApiType, &str)> {
     // Authorization: Bearer xxx
     if let Some(value) = headers.get(AUTHORIZATION) {
         if let Ok(value) = value.to_str() {
-            if let Some(token) = value.strip_prefix("Bearer ") {
-                return Some((api_type, token));
+            if let Some((scheme, token)) = value.split_once(" ") {
+                let scheme = scheme.trim();
+                let token = token.trim();
+                if scheme.eq_ignore_ascii_case("Bearer") {
+                    return Some((api_type, token));
+                }
             }
         }
     }
