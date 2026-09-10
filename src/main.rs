@@ -1,5 +1,7 @@
 use crate::config::Config;
-use crate::verifier::verify_auth;
+use crate::jwt::JwtVerifier;
+use crate::verifier::Verifier;
+use crate::verifier_endpoint::verify_auth;
 use axum::Router;
 use axum::routing::get;
 use clap::Parser;
@@ -7,7 +9,9 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 mod config;
+mod jwt;
 mod verifier;
+mod verifier_endpoint;
 
 #[derive(Debug, clap::Parser)]
 struct Args {
@@ -25,14 +29,16 @@ struct Args {
     tokens: String,
 }
 
+fn caddy_config(listen: &str) -> String {
+    format!("forward_auth {listen} {{\n    uri /verify\n}}")
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
 
     if args.caddy {
-        println!("forward_auth {} {{", args.listen);
-        println!("    uri /verify");
-        println!("}}");
+        println!("{}", caddy_config(&args.listen));
         return;
     }
 
@@ -43,13 +49,13 @@ async fn main() {
     info!("Starting LLM Auth verifier");
 
     let config = match Config::load(args.tokens) {
-        Ok(c) => {
-            if let Err(e) = c.verify_config() {
-                error!("Invalid configuration: {e}");
+        Ok(c) => match Verifier::new(c).await {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to initialize verifier: {e}");
                 std::process::exit(1);
             }
-            c
-        }
+        },
         Err(e) => {
             error!("{e}");
             std::process::exit(1);
@@ -71,5 +77,21 @@ async fn main() {
     if let Err(e) = axum::serve(listener, app).await {
         error!("{e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::caddy_config;
+
+    #[test]
+    fn caddy_config_uses_supported_forward_auth_subdirectives() {
+        let config = caddy_config("llm-auth-verifier:9731");
+
+        assert_eq!(
+            config,
+            "forward_auth llm-auth-verifier:9731 {\n    uri /verify\n}"
+        );
+        assert!(!config.contains("header_up"));
     }
 }

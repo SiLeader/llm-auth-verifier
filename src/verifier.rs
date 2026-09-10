@@ -1,76 +1,34 @@
-use crate::config::{ApiType, Config};
-use axum::extract::State;
-use axum::http::header::AUTHORIZATION;
-use axum::http::{HeaderMap, StatusCode, Uri};
-use std::collections::HashSet;
-use std::sync::LazyLock;
+use crate::config::{ApiType, Config, Token};
+use crate::jwt::JwtVerifier;
+use tracing::warn;
 
-pub(crate) async fn verify_auth(State(config): State<Config>, headers: HeaderMap) -> StatusCode {
-    let Some((api_type, api_key)) = extract_api_key(&headers) else {
-        return StatusCode::UNAUTHORIZED;
-    };
-
-    for token in &config.tokens {
-        if token.verify(api_type, api_key) {
-            return StatusCode::OK;
-        }
-    }
-    StatusCode::UNAUTHORIZED
+#[derive(Debug, Clone)]
+pub struct Verifier {
+    tokens: Vec<Token>,
+    jwt_verifier: JwtVerifier,
 }
 
-static ANTHROPIC_API_ENDPOINT: LazyLock<HashSet<&'static str>> =
-    LazyLock::new(|| HashSet::from_iter(["/v1/messages"]));
-static OPENAI_API_ENDPOINT: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    HashSet::from_iter([
-        "/v1/models",
-        "/v1/responses",
-        "/v1/chat/completions",
-        "/v1/embeddings",
-        "/v1/completions",
-    ])
-});
-
-fn check_api_type(headers: &HeaderMap) -> Option<ApiType> {
-    if let Some(uri) = headers.get("x-forwarded-uri").and_then(|s| s.to_str().ok()) {
-        let uri: Uri = uri.parse().ok()?;
-        if ANTHROPIC_API_ENDPOINT.contains(uri.path()) {
-            Some(ApiType::Anthropic)
-        } else if OPENAI_API_ENDPOINT.contains(uri.path()) {
-            Some(ApiType::OpenAi)
-        } else {
-            None
-        }
-    } else {
-        None
+impl Verifier {
+    pub async fn new(config: Config) -> anyhow::Result<Self> {
+        config.verify_config()?;
+        let jwt_verifier = JwtVerifier::load(&config.oidc).await?;
+        Ok(Self {
+            tokens: config.tokens,
+            jwt_verifier,
+        })
     }
-}
 
-fn extract_api_key(headers: &HeaderMap) -> Option<(ApiType, &str)> {
-    let api_type = check_api_type(headers)?;
-    // OpenAI / current Anthropic style:
-    //
-    // Authorization: Bearer xxx
-    if let Some(value) = headers.get(AUTHORIZATION) {
-        if let Ok(value) = value.to_str() {
-            if let Some((scheme, token)) = value.split_once(" ") {
-                let scheme = scheme.trim();
-                let token = token.trim();
-                if scheme.eq_ignore_ascii_case("Bearer") {
-                    return Some((api_type, token));
-                }
+    pub fn verify_token(&self, api_type: ApiType, token: &str) -> bool {
+        for t in &self.tokens {
+            if t.verify(api_type, token) {
+                return true;
             }
         }
-    }
-
-    if api_type == ApiType::Anthropic {
-        // Anthropic-compatible legacy style:
-        //
-        // x-api-key: xxx
-        headers
-            .get("x-api-key")
-            .and_then(|value| value.to_str().ok())
-            .map(|t| (api_type, t))
-    } else {
-        None
+        if let Err(e) = self.jwt_verifier.verify(token) {
+            warn!("JWT verification failed: {}", e);
+            false
+        } else {
+            true
+        }
     }
 }

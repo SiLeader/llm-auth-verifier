@@ -1,4 +1,5 @@
 pub use crate::config::token::*;
+use crate::jwt::JwtConfig;
 use anyhow::Context;
 use serde::Deserialize;
 use std::path::Path;
@@ -8,6 +9,7 @@ mod token;
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub tokens: Vec<Token>,
+    pub oidc: Vec<JwtConfig>,
 }
 
 impl Config {
@@ -21,5 +23,43 @@ impl Config {
             token.verify_config()?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn rejects_token_without_credentials() {
+        let config: Config = toml::from_str(
+            r#"
+                [[tokens]]
+                api = "openai"
+            "#,
+        )
+        .unwrap();
+
+        let error = config.verify_config().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "At least one of 'raw', 'sha256', or 'sha512' is required."
+        );
+    }
+
+    #[test]
+    fn validates_every_token_entry() {
+        let config: Config = toml::from_str(
+            r#"
+                [[tokens]]
+                raw = "valid-token"
+
+                [[tokens]]
+                expire_at = "2099-01-01T00:00:00Z"
+            "#,
+        )
+        .unwrap();
+
+        assert!(config.verify_config().is_err());
     }
 }

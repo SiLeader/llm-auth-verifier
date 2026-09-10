@@ -1,0 +1,8 @@
+[[tokens]]
+raw = "test-token"
+
+[[tokens]]
+sha256 = "4c5dc9b7708905f77f5e5d16316b5dfb425e68cb326dcd55a860e90a7707031e"
+
+[[tokens]]
+sha512 = "1fb3d3b3ed263ff715b48dfad17cc9e69697ccc59ba7c57922c7bc5e5312494542b788e22ce84463678e266e71ce0c401c9bdef9587b7c2a9d7dca4b38a031e8"

@@ -28,10 +28,10 @@ impl Token {
     }
 
     pub fn verify(&self, api: ApiType, token: &str) -> bool {
-        if let Some(at) = self.api {
-            if at != api {
-                return false;
-            }
+        if let Some(at) = self.api
+            && at != api
+        {
+            return false;
         }
         if let Some(exp) = &self.expire_at {
             let now = Utc::now();
@@ -39,10 +39,10 @@ impl Token {
                 return false;
             }
         }
-        if let Some(raw) = &self.raw {
-            if !constant_time_eq(raw.as_bytes(), token.as_bytes()) {
-                return false;
-            }
+        if let Some(raw) = &self.raw
+            && !constant_time_eq(raw.as_bytes(), token.as_bytes())
+        {
+            return false;
         }
         if let Some(sha256) = &self.sha256 {
             let token_sha256 = hex::encode(sha2::Sha256::digest(token.as_bytes()));
