@@ -3,6 +3,10 @@ mod key;
 
 use reqwest::Client;
 use std::collections::HashMap;
+use std::time::Duration;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct JwkDownloader<'a> {
     client: Client,
@@ -10,11 +14,14 @@ pub struct JwkDownloader<'a> {
 }
 
 impl<'a> JwkDownloader<'a> {
-    pub fn new(issuer: &'a str) -> Self {
-        Self {
-            client: Client::new(),
+    pub fn new(issuer: &'a str) -> anyhow::Result<Self> {
+        Ok(Self {
+            client: Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(REQUEST_TIMEOUT)
+                .build()?,
             issuer,
-        }
+        })
     }
 
     pub async fn load(&self) -> anyhow::Result<HashMap<String, jsonwebtoken::DecodingKey>> {
