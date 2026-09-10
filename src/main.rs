@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 mod config;
 mod jwt;
+mod token;
 mod verifier;
 mod verifier_endpoint;
 
