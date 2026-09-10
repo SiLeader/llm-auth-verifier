@@ -121,7 +121,7 @@ impl JwkIssuer {
             return Ok(());
         }
 
-        let _refresh_guard = self.refresh_lock.lock().await;
+        let refresh_guard = Arc::clone(&self.refresh_lock).lock_owned().await;
         let now = Utc::now();
 
         // Another request may have refreshed the cache while this request was
@@ -130,17 +130,27 @@ impl JwkIssuer {
             return Ok(());
         }
 
-        self.keys.write().await.last_refresh_attempt = Some(now);
+        // Run the refresh on a detached task. The triggering request is dropped
+        // when its client disconnects, and cancelling the fetch there would
+        // start the cooldown without updating the keys. The task owns the
+        // single-flight lock so waiting requests resume only after it finishes.
+        let issuer = self.config.issuer.clone();
+        let keys = Arc::clone(&self.keys);
+        tokio::spawn(async move {
+            let _refresh_guard = refresh_guard;
+            keys.write().await.last_refresh_attempt = Some(now);
 
-        // Do not hold the cache write lock during network I/O. Existing keys
-        // remain usable while a refresh is in progress.
-        let downloader = JwkDownloader::new(&self.config.issuer)?;
-        let new_keys = downloader.load().await?;
+            // Do not hold the cache write lock during network I/O. Existing keys
+            // remain usable while a refresh is in progress.
+            let downloader = JwkDownloader::new(&issuer)?;
+            let new_keys = downloader.load().await?;
 
-        let mut keys = self.keys.write().await;
-        keys.keys = new_keys;
-        keys.last_fetched = Utc::now();
-        Ok(())
+            let mut keys = keys.write().await;
+            keys.keys = new_keys;
+            keys.last_fetched = Utc::now();
+            anyhow::Ok(())
+        })
+        .await?
     }
 
     async fn refresh_needed(&self, missing_kid: Option<&str>, now: DateTime<Utc>) -> bool {
@@ -172,11 +182,20 @@ mod tests {
     use serde_json::{Value, json};
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
     use tokio::task::JoinHandle;
+
+    /// Holds the JWKS response until the test releases it.
+    #[derive(Clone, Default)]
+    struct JwksGate {
+        requested: Arc<Notify>,
+        release: Arc<Notify>,
+    }
 
     async fn start_jwks_server(
         jwks_status: StatusCode,
         jwks: Value,
+        gate: Option<JwksGate>,
     ) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let issuer = format!("http://{}", listener.local_addr().unwrap());
@@ -199,8 +218,13 @@ mod tests {
                 get(move || {
                     let jwks = jwks.clone();
                     let request_count = Arc::clone(&jwks_request_count);
+                    let gate = gate.clone();
                     async move {
                         request_count.fetch_add(1, Ordering::SeqCst);
+                        if let Some(gate) = gate {
+                            gate.requested.notify_one();
+                            gate.release.notified().await;
+                        }
                         (jwks_status, Json(jwks))
                     }
                 }),
@@ -239,6 +263,7 @@ mod tests {
                     "e": "AQAB"
                 }]
             }),
+            None,
         )
         .await;
         let issuer = issuer_with_keys(issuer, HashMap::new());
@@ -269,8 +294,12 @@ mod tests {
 
     #[tokio::test]
     async fn failed_refresh_keeps_existing_keys_and_starts_cooldown() {
-        let (issuer, request_count, server) =
-            start_jwks_server(StatusCode::INTERNAL_SERVER_ERROR, json!({ "keys": [] })).await;
+        let (issuer, request_count, server) = start_jwks_server(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "keys": [] }),
+            None,
+        )
+        .await;
         let mut original_keys = HashMap::new();
         original_keys.insert(
             "existing-key".to_owned(),
@@ -285,6 +314,42 @@ mod tests {
             .refresh_for_unknown_kid("another-unknown-key")
             .await
             .unwrap();
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cancelled_request_still_completes_refresh() {
+        let gate = JwksGate::default();
+        let (issuer, request_count, server) = start_jwks_server(
+            StatusCode::OK,
+            json!({
+                "keys": [{
+                    "kty": "RSA",
+                    "kid": "rotated-key",
+                    "n": "AQAB",
+                    "e": "AQAB"
+                }]
+            }),
+            Some(gate.clone()),
+        )
+        .await;
+        let issuer = issuer_with_keys(issuer, HashMap::new());
+
+        // Drop the triggering request while the JWKS response is pending, as
+        // hyper does when the client disconnects.
+        let request = tokio::spawn({
+            let issuer = issuer.clone();
+            async move { issuer.refresh_for_unknown_kid("rotated-key").await }
+        });
+        gate.requested.notified().await;
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        gate.release.notify_one();
+
+        // The single-flight lock is held until the refresh has finished.
+        drop(issuer.refresh_lock.lock().await);
+        assert!(issuer.keys.read().await.keys.contains_key("rotated-key"));
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
         server.abort();
     }

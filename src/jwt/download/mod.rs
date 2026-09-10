@@ -19,6 +19,8 @@ impl<'a> JwkDownloader<'a> {
             client: Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
                 .timeout(REQUEST_TIMEOUT)
+                // Tests serve discovery and JWKS from a local plain-HTTP server.
+                .https_only(!cfg!(test))
                 .build()?,
             issuer,
         })

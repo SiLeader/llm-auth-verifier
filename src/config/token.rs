@@ -24,6 +24,21 @@ impl Token {
         if self.raw.is_none() && self.sha256.is_none() && self.sha512.is_none() {
             anyhow::bail!("At least one of 'raw', 'sha256', or 'sha512' is required.");
         }
+        if let Some(raw) = &self.raw
+            && raw.is_empty()
+        {
+            anyhow::bail!("'raw' token cannot be empty.");
+        }
+        if let Some(sha256) = &self.sha256
+            && sha256.len() != 64
+        {
+            anyhow::bail!("'sha256' must be a 64-character hex string.");
+        }
+        if let Some(sha512) = &self.sha512
+            && sha512.len() != 128
+        {
+            anyhow::bail!("'sha512' must be a 128-character hex string.");
+        }
         Ok(())
     }
 
