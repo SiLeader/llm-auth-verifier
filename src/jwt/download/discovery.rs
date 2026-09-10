@@ -9,7 +9,10 @@ pub(super) struct OidcDiscovery {
 
 impl JwkDownloader<'_> {
     pub(super) async fn load_oidc_discovery(&self) -> anyhow::Result<OidcDiscovery> {
-        let url = format!("{}/.well-known/openid-configuration", self.issuer);
+        let url = format!(
+            "{}/.well-known/openid-configuration",
+            self.issuer.trim_end_matches('/')
+        );
         let response = self.client.get(&url).send().await?;
         if !response.status().is_success() {
             anyhow::bail!(

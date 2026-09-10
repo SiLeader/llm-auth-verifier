@@ -8,7 +8,9 @@ mod token;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
+    #[serde(default)]
     pub tokens: Vec<Token>,
+    #[serde(default)]
     pub oidc: Vec<JwtConfig>,
 }
 

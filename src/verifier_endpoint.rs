@@ -14,7 +14,7 @@ pub(crate) async fn verify_auth(
         return StatusCode::UNAUTHORIZED;
     };
 
-    if verifier.verify_token(api_type, api_key) {
+    if verifier.verify_token(api_type, api_key).await {
         return StatusCode::OK;
     }
 

@@ -3,6 +3,7 @@ use crate::jwt::download::discovery::OidcDiscovery;
 use jsonwebtoken::DecodingKey;
 use serde::Deserialize;
 use std::collections::HashMap;
+use tracing::warn;
 
 #[derive(Debug, Deserialize)]
 struct JwkSet {
@@ -14,28 +15,30 @@ struct JwkContent {
     kid: String,
     #[serde(flatten)]
     param: JwkParam,
-    #[serde(rename = "use")]
-    using: String,
-    alg: String,
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kty")]
 enum JwkParam {
-    RSA { n: String, e: String },
-    EC { crv: String, x: String, y: String },
-}
-
-pub(crate) struct JwtDecodingKey {
-    pub kid: String,
-    pub key: DecodingKey,
+    RSA {
+        n: String,
+        e: String,
+    },
+    EC {
+        x: String,
+        y: String,
+    },
+    #[serde(other)]
+    Unsupported,
 }
 
 impl JwkParam {
-    fn to_decoding_key(&self) -> anyhow::Result<DecodingKey> {
+    fn to_decoding_key(&self) -> anyhow::Result<Option<DecodingKey>> {
         match self {
-            JwkParam::RSA { n, e } => Ok(DecodingKey::from_rsa_components(&n, &e)?),
-            JwkParam::EC { x, y, .. } => Ok(DecodingKey::from_ec_components(&x, &y)?),
+            JwkParam::RSA { n, e } => Ok(Some(DecodingKey::from_rsa_components(n, e)?)),
+            JwkParam::EC { x, y } => Ok(Some(DecodingKey::from_ec_components(x, y)?)),
+            JwkParam::Unsupported => Ok(None),
         }
     }
 }
@@ -64,7 +67,10 @@ impl JwkDownloader<'_> {
         let keys = self.load_key_from_endpoint(discovery).await?;
         let mut decoding_keys = HashMap::new();
         for jwk in keys {
-            let decoding_key = jwk.param.to_decoding_key()?;
+            let Some(decoding_key) = jwk.param.to_decoding_key()? else {
+                warn!("Unsupported JWK type for kid {}. Skipping.", jwk.kid);
+                continue;
+            };
             decoding_keys.insert(jwk.kid.clone(), decoding_key);
         }
         Ok(decoding_keys)

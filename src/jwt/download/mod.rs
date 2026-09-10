@@ -13,7 +13,7 @@ impl<'a> JwkDownloader<'a> {
     pub fn new(issuer: &'a str) -> Self {
         Self {
             client: Client::new(),
-            issuer: issuer.trim().trim_end_matches('/'),
+            issuer,
         }
     }
 
