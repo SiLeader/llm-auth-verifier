@@ -2,111 +2,51 @@
 
 [English](README.md) | [日本語](README_ja.md)
 
-`llm-auth-verifier` is a lightweight, high-performance authentication service designed to secure local LLM servers (such as vLLM, Ollama, llama.cpp, LocalAI, etc.) exposing OpenAI API and Anthropic Messages API compatible endpoints.
+`llm-auth-verifier` is a lightweight authentication service for local LLM servers that expose OpenAI- or Anthropic-compatible APIs, including llama.cpp, Ollama, LM Studio, and vLLM.
 
-It is designed to be used in conjunction with the [Caddy web server](https://caddyserver.com/)'s [`forward_auth`](https://caddyserver.com/docs/caddyfile/directives/forward_auth) directive. Caddy delegates client authorization checks to `llm-auth-verifier` before proxying requests to the upstream local LLM engine.
-
----
-
-## Table of Contents
-
-- [Features](#features)
-- [How It Works](#how-it-works)
-- [Supported Endpoints & Authentication Headers](#supported-endpoints--authentication-headers)
-- [Installation](#installation)
-- [Usage](#usage)
-  - [Command-line Options](#command-line-options)
-  - [Generating Caddy Configuration](#generating-caddy-configuration)
-- [Configuration](#configuration)
-  - [Static Token Configuration](#static-token-configuration)
-  - [OpenID Connect (OIDC) / JWT Configuration](#openid-connect-oidc--jwt-configuration)
-  - [Complete `tokens.toml` Example](#complete-tokenstoml-example)
-- [Caddy Integration](#caddy-integration)
-  - [Example `Caddyfile`](#example-caddyfile)
-- [Testing & Examples](#testing--examples)
-- [License](#license)
-
----
+It runs behind a reverse proxy. The proxy sends each request to `/verify`, and the verifier checks the original HTTP method and path together with a static access token or an OpenID Connect (OIDC) JWT. Only recognized LLM API endpoints are authorized.
 
 ## Features
 
-- **OpenAI & Anthropic API Compatibility**: Validates requests for both OpenAI-compatible and Anthropic Messages API compatible endpoints.
-- **Multiple Token Hash Algorithms**: Supports plain-text (`raw`), SHA-256 (`sha256`), and SHA-512 (`sha512`) token representations.
-- **Constant-Time Comparison**: Protects against timing attacks using constant-time string comparison (`constant_time_eq`).
-- **Token Expiration**: Set an optional expiration timestamp (`expire_at`) per token.
-- **API-Level Scoping**: Restrict tokens to either `openai` or `anthropic` endpoints, or allow both.
-- **OpenID Connect (OIDC) / JWT Support**: Verify JWTs dynamically using OIDC discovery (`/.well-known/openid-configuration`) and JWKS with automatic key caching and rotation.
-- **Native Caddy Forward Auth Integration**: Built-in CLI command (`--caddy`) to output the exact `forward_auth` block for your `Caddyfile`.
+- OpenAI- and Anthropic-compatible endpoint detection by HTTP method and path
+- Built-in API presets for llama.cpp, Ollama, LM Studio, and vLLM
+- Exact-path and regular-expression definitions for custom APIs
+- Plaintext, SHA-256, and SHA-512 static token representations
+- Constant-time token comparison, optional expiration, and per-API scoping
+- OIDC discovery and JWT verification with JWKS caching and key rotation
+- Configuration generators for Caddy, Traefik, and nginx
+- JSON logs with authentication audit fields
+- A minimal, non-root container image
 
----
+## How it works
 
-## How It Works
-
-```
-                        +---------------------------+
-                        |  Client (SDK, WebUI, CLI) |
-                        +-------------+-------------+
-                                      |
-                                      | HTTP Request (OpenAI / Anthropic API)
-                                      v
-                        +---------------------------+
-                        |     Caddy Reverse Proxy   |
-                        +-------------+-------------+
-                                      |
-                         forward_auth | GET /verify
-                                      v
-                        +---------------------------+
-                        |     llm-auth-verifier     |
-                        +-------------+-------------+
-                                      |
-               200 OK (Authorized)    |    401 Unauthorized
-          +---------------------------+---------------------------+
-          |                                                       |
-          v                                                       v
-+-------------------+                                   +-------------------+
-| Proxy to Upstream |                                   |  Reject Request   |
-|     Local LLM     |                                   |   (HTTP 401)      |
-|  (e.g., :8000)    |                                   +-------------------+
-+-------------------+
+```text
+Client
+  |
+  | LLM API request
+  v
+Reverse proxy ---- auth request ----> llm-auth-verifier /verify
+  |                                      |
+  | 2xx: authorized                      | checks X-Forwarded-Method,
+  |                                      | X-Forwarded-Uri, and the token
+  v                                      |
+Local LLM server                    401: rejected
 ```
 
-1. The client sends a request to the Caddy reverse proxy targeting an LLM endpoint (e.g., `/v1/chat/completions` or `/v1/messages`).
-2. Caddy uses `forward_auth` to forward verification information to `llm-auth-verifier` at `/verify`.
-3. `llm-auth-verifier` inspects:
-   - The original request URI via `X-Forwarded-Uri` to identify whether the target API is OpenAI or Anthropic.
-   - The token from `Authorization: Bearer <token>` or `x-api-key: <token>`.
-4. If the token is valid, unexpired, and matches the target API (or passes JWT/OIDC validation), `llm-auth-verifier` responds with HTTP `200 OK`.
-5. Caddy then proxies the request to the upstream local LLM server. Otherwise, it returns HTTP `401 Unauthorized`.
+The reverse proxy must pass the original request in these headers:
 
----
+- `X-Forwarded-Method`: the original HTTP method
+- `X-Forwarded-Uri`: the original request URI; query parameters are ignored during API matching
+- `Authorization: Bearer <token>`: accepted for every configured API
+- `x-api-key: <token>`: also accepted for predefined Anthropic APIs
 
-## Supported Endpoints & Authentication Headers
-
-### Endpoints
-
-| Target API | Recognized Request URIs |
-|---|---|
-| **Anthropic Messages API** | `/v1/messages` |
-| **OpenAI API** | `/v1/models`, `/v1/responses`, `/v1/chat/completions`, `/v1/embeddings`, `/v1/completions` |
-
-### Authentication Headers
-
-- **OpenAI API**:
-  - `Authorization: Bearer <token>` (case-insensitive scheme)
-- **Anthropic Messages API**:
-  - `Authorization: Bearer <token>`
-  - `x-api-key: <token>`
-
----
+The verifier returns `200 OK` when both the endpoint and credential are allowed. Invalid credentials, expired credentials, missing forwarding headers, and unmatched methods or paths return `401 Unauthorized`.
 
 ## Installation
 
-### Prerequisites
+### Build from source
 
-- [Rust](https://www.rust-lang.org/) (2024 edition or newer)
-- `cargo`
-
-### Build from Source
+Install a Rust toolchain with Rust 2024 edition support, then run:
 
 ```bash
 git clone https://github.com/SiLeader/llm-auth-verifier.git
@@ -114,107 +54,151 @@ cd llm-auth-verifier
 cargo build --release
 ```
 
-The compiled binary will be located at `target/release/llm-auth-verifier`.
+The binary is written to `target/release/llm-auth-verifier`.
 
----
+### Container image
+
+The project publishes `ghcr.io/sileader/llm-auth-verifier`. Mount the configuration read-only at the default path:
+
+```bash
+docker run --rm \
+  -p 9731:9731 \
+  -v "$PWD/config.toml:/etc/llm-auth-verifier/config.toml:ro" \
+  ghcr.io/sileader/llm-auth-verifier:latest
+```
+
+The image listens on `0.0.0.0:9731` and runs as UID/GID `1000:1000`, so the mounted file must be readable by that user.
 
 ## Usage
 
-### Command-line Options
+```text
+Usage: llm-auth-verifier [OPTIONS] [COMMAND]
+
+Commands:
+  caddy-config
+  traefik-config
+  nginx-config
+  predefined-apis
+
+Options:
+      --listen <LISTEN>  Listen host and port [default: 127.0.0.1:9731]
+      --config <CONFIG>  Path to configuration file [default: /etc/llm-auth-verifier/config.toml]
+  -h, --help             Print help
+```
+
+Start the server with a custom configuration:
 
 ```bash
-llm-auth-verifier [OPTIONS]
+llm-auth-verifier --listen 127.0.0.1:9731 --config /path/to/config.toml
 ```
 
-| Option | Default | Description |
-|---|---|---|
-| `--listen <LISTEN>` | `127.0.0.1:9731` | Host and port to listen on. |
-| `--tokens <TOKENS>` | `/etc/llm-auth-verifier/tokens.toml` | Path to the configuration TOML file. |
-| `--caddy` | - | Print the Caddy `forward_auth` configuration block and exit. |
-| `-h, --help` | - | Display help information. |
-
-### Running the Server
+Set `RUST_LOG` to adjust log filtering. For example:
 
 ```bash
-# Using a custom tokens configuration path and listen port
-llm-auth-verifier --listen 127.0.0.1:9731 --tokens /path/to/tokens.toml
+RUST_LOG=llm_auth_verifier=debug llm-auth-verifier --config ./config.toml
 ```
 
-### Generating Caddy Configuration
-
-You can print the required Caddy snippet directly:
-
-```bash
-llm-auth-verifier --listen 127.0.0.1:9731 --caddy
-```
-
-Output:
-```caddy
-forward_auth 127.0.0.1:9731 {
-    uri /verify
-}
-```
-
----
+The process handles Ctrl+C and, on Unix, `SIGTERM` for graceful shutdown.
 
 ## Configuration
 
-The configuration file is written in TOML format and supports two authentication mechanisms: **Static Tokens** and **OpenID Connect (OIDC)**.
+The TOML configuration has three top-level areas: `[api]`, `[[tokens]]`, and `[[oidc]]`.
 
-### Static Token Configuration
+### API selection
 
-Each `[[tokens]]` entry defines a token rule:
-
-- `raw` *(string, optional)*: Plaintext token.
-- `sha256` *(string, optional)*: 64-character lowercase hexadecimal SHA-256 hash of the token.
-- `sha512` *(string, optional)*: 128-character lowercase hexadecimal SHA-512 hash of the token.
-- `api` *(string, optional)*: Restricts the token to `"openai"` or `"anthropic"`. If omitted, the token is valid for both.
-- `expire_at` *(string, optional)*: RFC 3339 formatted expiration timestamp (e.g. `2026-12-31T23:59:59Z`).
-
-> **Note**: At least one of `raw`, `sha256`, or `sha512` is required per token entry. Storing hashed tokens (`sha256` or `sha512`) is recommended to avoid saving plaintext secrets in the config file.
-
-#### Generating Token Hashes
-
-```bash
-# SHA-256 hash:
-echo -n "my-secret-token" | sha256sum | cut -d' ' -f1
-
-# SHA-512 hash:
-echo -n "my-secret-token" | sha512sum | cut -d' ' -f1
-```
-
-### OpenID Connect (OIDC) / JWT Configuration
-
-Each `[[oidc]]` entry configures JWT authentication against an OpenID Connect provider:
-
-- `issuer` *(string, required)*: OIDC issuer URL (must provide `/.well-known/openid-configuration`).
-- `audiences` *(array of strings, required)*: Valid `aud` claims.
-- `subjects` *(array of strings, required)*: Allowed `sub` claims.
-- `cache_ttl` *(string, optional)*: Time-to-live for cached JWKS keys (e.g., `"12h"`, `"1h"`, `"30m"`). Defaults to `12h`.
-
-### Complete `tokens.toml` Example
+Select one built-in provider preset:
 
 ```toml
-# Plain-text token valid for both OpenAI and Anthropic
-[[tokens]]
-raw = "sk-plain-text-token-12345"
+[api]
+provider = "v-llm" # llama-cpp, ollama, lm-studio, or v-llm
+```
 
-# SHA-256 hashed token with an expiration date
+If the entire `[api]` section is omitted, the `llama-cpp` preset is used. Each preset enables only the methods and paths implemented by that provider. See [predefined-apis.md](predefined-apis.md), or inspect them from the installed binary:
+
+```bash
+llm-auth-verifier predefined-apis
+llm-auth-verifier predefined-apis --provider v-llm
+```
+
+Use `named_apis` to add selected predefined APIs. An `[api]` section without `provider` can therefore act as an allowlist:
+
+```toml
+[api]
+named_apis = [
+  "openai/chat-completions",
+  "anthropic/messages",
+]
+```
+
+Custom endpoints support exact or regex path matching:
+
+```toml
+[api]
+provider = "ollama"
+
+[[api.custom_apis]]
+name = "custom/rerank"
+method = "POST"
+path = "/v1/rerank"
+path_type = "exact"
+
+[[api.custom_apis]]
+name = "custom/model-files"
+method = "GET"
+path = "^/models/[0-9]+/files$"
+path_type = "regex"
+```
+
+`name` is optional for a custom API and defaults to `<METHOD>:<PATH>`. Custom APIs accept Bearer credentials, but are not assigned to the OpenAI or Anthropic API family; use `allowed_apis` rather than the legacy `api` field to scope tokens to them.
+
+### Static tokens
+
+Each `[[tokens]]` entry accepts these fields. At least one of `raw`, `sha256`, or `sha512` is required.
+
+| Field | Required | Description |
+|---|---:|---|
+| `name` | No | Name included in audit logs; defaults to `index:<n>`. |
+| `raw` | Conditional | Plaintext token. |
+| `sha256` | Conditional | Hex-encoded SHA-256 digest. |
+| `sha512` | Conditional | Hex-encoded SHA-512 digest. If multiple token values are present, this takes precedence, followed by `sha256`, then `raw`. |
+| `allowed_apis` | No | API names this token may access. Omit to allow every configured API. |
+| `api` | No | Legacy family scope: `openai` or `anthropic`. |
+| `expire_at` | No | RFC 3339 expiration timestamp. |
+
+Hashed token storage is recommended:
+
+```bash
+printf %s "my-secret-token" | sha256sum | cut -d' ' -f1
+printf %s "my-secret-token" | sha512sum | cut -d' ' -f1
+```
+
+Example:
+
+```toml
 [[tokens]]
-sha256 = "4c5dc9b7708905f77f5e5d16316b5dfb425e68cb326dcd55a860e90a7707031e"
+name = "chat-client"
+sha256 = "ea5add57437cbf20af59034d7ed17968dcc56767b41965fcc5b376d45db8b4a3"
+allowed_apis = ["openai/chat-completions", "openai/models"]
 expire_at = "2026-12-31T23:59:59Z"
 
-# SHA-512 hashed token restricted to OpenAI API endpoints only
 [[tokens]]
-sha512 = "1fb3d3b3ed263ff715b48dfad17cc9e69697ccc59ba7c57922c7bc5e5312494542b788e22ce84463678e266e71ce0c401c9bdef9587b7c2a9d7dca4b38a031e8"
-api = "openai"
-
-# Token restricted to Anthropic API endpoints only
-[[tokens]]
+name = "anthropic-client"
 raw = "sk-ant-restricted-token"
 api = "anthropic"
+```
 
-# OpenID Connect (JWT) validation
+### OpenID Connect / JWT
+
+Each `[[oidc]]` entry configures one issuer:
+
+| Field | Required | Description |
+|---|---:|---|
+| `issuer` | Yes | Issuer URL. Its discovery document must be available at `/.well-known/openid-configuration`. |
+| `audiences` | Yes | Accepted `aud` claim values. |
+| `subjects` | No | Accepted `sub` claim values. Omit to allow any subject. |
+| `cache_ttl` | No | JWKS cache lifetime such as `30m`, `1h`, or `12h`; defaults to `12h`. |
+
+```toml
 [[oidc]]
 issuer = "https://auth.example.com"
 audiences = ["llm-service"]
@@ -222,79 +206,108 @@ subjects = ["user-123", "service-account-abc"]
 cache_ttl = "6h"
 ```
 
----
+JWTs must include `kid`, `sub`, `aud`, `iss`, and `exp`. The verifier loads keys during startup, refreshes stale keys, and attempts a rate-limited refresh when it encounters an unknown `kid`.
 
-## Caddy Integration
+### Complete example
 
-### Example `Caddyfile`
+```toml
+[api]
+provider = "ollama"
+named_apis = ["openai/audio-transcriptions"]
 
-Here is an example Caddy configuration that secures a local LLM server running on port `8000`:
+[[api.custom_apis]]
+name = "custom/rerank"
+method = "POST"
+path = "/v1/rerank"
+path_type = "exact"
+
+[[tokens]]
+name = "application"
+raw = "replace-with-a-secret"
+allowed_apis = ["openai/chat-completions", "custom/rerank"]
+
+[[oidc]]
+issuer = "https://auth.example.com"
+audiences = ["llm-service"]
+cache_ttl = "12h"
+```
+
+## Reverse proxy integration
+
+`--listen` controls both the server bind address and the address printed by configuration-generator commands. Place this global option before the subcommand.
+
+### Caddy
+
+```bash
+llm-auth-verifier --listen 127.0.0.1:9731 caddy-config
+```
 
 ```caddy
 llm.example.com {
-    # Forward auth verification to llm-auth-verifier
     forward_auth 127.0.0.1:9731 {
         uri /verify
     }
 
-    # Reverse proxy to the local LLM server (vLLM, Ollama, llama.cpp, etc.)
     reverse_proxy 127.0.0.1:8000
 }
 ```
 
----
+### nginx
 
-## Testing & Examples
-
-### 1. OpenAI Chat Completions Request
+Generate the internal authentication location:
 
 ```bash
-curl -X POST https://llm.example.com/v1/chat/completions \
-  -H "Authorization: Bearer sk-plain-text-token-12345" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
+llm-auth-verifier --listen 127.0.0.1:9731 nginx-config
 ```
 
-### 2. Anthropic Messages Request
+Then reference it with `auth_request` in the protected location:
 
-Using `x-api-key`:
+```nginx
+location = /__/llm-auth-verifier/verify {
+    internal;
+    proxy_pass http://127.0.0.1:9731/verify;
+    proxy_set_header X-Forwarded-Uri $request_uri;
+    proxy_set_header X-Forwarded-Method $request_method;
+}
+
+location / {
+    auth_request /__/llm-auth-verifier/verify;
+    proxy_pass http://127.0.0.1:8000;
+}
+```
+
+### Traefik
+
+Generate dynamic middleware configuration in YAML, TOML, Docker labels, Consul Catalog tags, or Kubernetes CRD format:
+
 ```bash
-curl -X POST https://llm.example.com/v1/messages \
+llm-auth-verifier --listen llm-auth-verifier:9731 traefik-config
+llm-auth-verifier --listen llm-auth-verifier:9731 traefik-config --format kubernetes --name llm-auth
+```
+
+Run `llm-auth-verifier traefik-config --help` for all formats and options, then attach the generated middleware to the router that fronts the LLM server.
+
+## Request examples
+
+OpenAI-compatible request:
+
+```bash
+curl https://llm.example.com/v1/chat/completions \
+  -H "Authorization: Bearer replace-with-a-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"example-model","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Anthropic-compatible request:
+
+```bash
+curl https://llm.example.com/v1/messages \
   -H "x-api-key: sk-ant-restricted-token" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-3-5-sonnet",
-    "max_tokens": 1024,
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
+  -d '{"model":"example-model","max_tokens":128,"messages":[{"role":"user","content":"Hello"}]}'
 ```
-
-Or using `Authorization: Bearer`:
-```bash
-curl -X POST https://llm.example.com/v1/messages \
-  -H "Authorization: Bearer sk-plain-text-token-12345" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-3-5-sonnet",
-    "max_tokens": 1024,
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-### 3. Unauthorized Requests
-
-Any request with an invalid token, expired token, or unsupported path will receive:
-```
-HTTP/1.1 401 Unauthorized
-```
-
----
 
 ## License
 
-This project is licensed under the [Apache License 2.0](LICENSE).
+Licensed under the [Apache License 2.0](LICENSE).

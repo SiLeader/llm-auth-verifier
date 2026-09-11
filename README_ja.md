@@ -2,110 +2,51 @@
 
 [English](README.md) | [日本語](README_ja.md)
 
-`llm-auth-verifier` は、OpenAI API および Anthropic Messages API 互換エンドポイントを提供するローカル LLM サーバー（vLLM、Ollama、llama.cpp、LocalAI など）を保護するための、軽量かつ高速なアクセストークン認証サービスです。
+`llm-auth-verifier` は、llama.cpp、Ollama、LM Studio、vLLM など、OpenAI または Anthropic 互換 API を提供するローカル LLM サーバー向けの軽量な認証サービスです。
 
-[Caddy ウェブサーバー](https://caddyserver.com/) の [`forward_auth`](https://caddyserver.com/docs/caddyfile/directives/forward_auth) ディレクティブと組み合わせて使用することを前提として設計されています。Caddy がリバースプロキシとしてアップストリームのローカル LLM にリクエストを転送する前に、クライアント認証の検証を `llm-auth-verifier` に委譲します。
-
----
-
-## 目次
-
-- [特徴](#特徴)
-- [動作の仕組み](#動作の仕組み)
-- [対応エンドポイントと認証ヘッダー](#対応エンドポイントと認証ヘッダー)
-- [インストール](#インストール)
-- [使い方](#使い方)
-  - [コマンドラインオプション](#コマンドラインオプション)
-  - [Caddy 設定の生成](#caddy-設定の生成)
-- [設定](#設定)
-  - [静的トークン設定](#静的トークン設定)
-  - [OpenID Connect (OIDC) / JWT 設定](#openid-connect-oidc--jwt-設定)
-  - [`tokens.toml` の完全な設定例](#tokenstoml-の完全な設定例)
-- [Caddy との連携](#caddy-との連携)
-  - [`Caddyfile` の設定例](#caddyfile-の設定例)
-- [テストとリクエスト例](#テストとリクエスト例)
-- [ライセンス](#ライセンス)
-
----
+リバースプロキシの背後で動作し、プロキシから `/verify` に送られたリクエストについて、元の HTTP メソッドとパス、および静的アクセストークンまたは OpenID Connect（OIDC）JWT を検証します。定義済みの LLM API エンドポイントだけを認可します。
 
 ## 特徴
 
-- **OpenAI & Anthropic API 互換**: OpenAI 互換 API および Anthropic Messages API 互換エンドポイントの両方の認証リクエストを判定可能。
-- **複数のトークン形式**: 平文（`raw`）、SHA-256（`sha256`）、SHA-512（`sha512`）のハッシュ形式に対応。
-- **タイミング攻撃対策**: 一定時間比較（`constant_time_eq`）によるセキュアな文字列検証。
-- **トークンの有効期限**: トークンごとに有効期限（`expire_at`）を設定可能。
-- **API スコープ制限**: トークンごとに `openai` または `anthropic` のエンドポイントに限定、あるいは両方で利用可能に設定可能。
-- **OpenID Connect (OIDC) / JWT 対応**: OIDC Discovery（`/.well-known/openid-configuration`）および JWKS によるキー自動取得・キャッシュ・ローテーション対応の JWT 検証。
-- **Caddy Forward Auth 設定の自動出力**: Caddyfile 用の `forward_auth` 設定スニペットを出力する CLI コマンド（`--caddy`）を搭載。
-
----
+- HTTP メソッドとパスによる OpenAI／Anthropic 互換エンドポイントの判定
+- llama.cpp、Ollama、LM Studio、vLLM の API プリセット
+- 完全一致または正規表現によるカスタム API 定義
+- 平文、SHA-256、SHA-512 形式の静的トークン
+- 定数時間比較、有効期限、API ごとのアクセス制限
+- OIDC Discovery と、JWKS のキャッシュ・キーローテーションに対応した JWT 検証
+- Caddy、Traefik、nginx 向け設定の生成コマンド
+- 認証監査フィールドを含む JSON ログ
+- 非 root ユーザーで動作する最小構成のコンテナイメージ
 
 ## 動作の仕組み
 
-```
-                        +---------------------------+
-                        |  Client (SDK, WebUI, CLI) |
-                        +-------------+-------------+
-                                      |
-                                      | HTTP Request (OpenAI / Anthropic API)
-                                      v
-                        +---------------------------+
-                        |     Caddy Reverse Proxy   |
-                        +-------------+-------------+
-                                      |
-                         forward_auth | GET /verify
-                                      v
-                        +---------------------------+
-                        |     llm-auth-verifier     |
-                        +-------------+-------------+
-                                      |
-               200 OK (認可成功)       |    401 Unauthorized (認可失敗)
-          +---------------------------+---------------------------+
-          |                                                       |
-          v                                                       v
-+-------------------+                                   +-------------------+
-| アップストリームへ転送  |                                   |  リクエストを拒否    |
-| (例: :8000のLLM)  |                                   |   (HTTP 401)      |
-+-------------------+                                   +-------------------+
+```text
+クライアント
+  |
+  | LLM API リクエスト
+  v
+リバースプロキシ ---- 認証リクエスト ----> llm-auth-verifier /verify
+  |                                        |
+  | 2xx: 認可成功                          | X-Forwarded-Method、
+  |                                        | X-Forwarded-Uri、トークンを検証
+  v                                        |
+ローカル LLM サーバー                 401: 拒否
 ```
 
-1. クライアントが LLM エンドポイント（`/v1/chat/completions` や `/v1/messages` など）に向けて Caddy リバースプロキシにリクエストを送信します。
-2. Caddy は `forward_auth` により、リクエストヘッダーを保持したまま `llm-auth-verifier` の `/verify` エンドポイントへ認可確認を行います。
-3. `llm-auth-verifier` は以下を検証します:
-   - `X-Forwarded-Uri` ヘッダーから元のリクエスト URI を判定し、アクセス先が OpenAI API か Anthropic API かを特定。
-   - `Authorization: Bearer <token>` または `x-api-key: <token>` からトークンを抽出。
-4. トークンが有効であり、有効期限内で対象 API と一致する場合（または JWT/OIDC 検証をパスした場合）、HTTP `200 OK` を返します。
-5. Caddy は認証成功を受けてリクエストをローカル LLM にプロキシ転送します。認証に失敗した場合は HTTP `401 Unauthorized` を返してアクセスを遮断します。
+リバースプロキシは、元のリクエスト情報を次のヘッダーで渡す必要があります。
 
----
+- `X-Forwarded-Method`: 元の HTTP メソッド
+- `X-Forwarded-Uri`: 元のリクエスト URI（API 判定時にクエリパラメーターは無視されます）
+- `Authorization: Bearer <token>`: 設定したすべての API で利用可能
+- `x-api-key: <token>`: 定義済み Anthropic API でも利用可能
 
-## 対応エンドポイントと認証ヘッダー
-
-### エンドポイント
-
-| 対象 API | 認識されるリクエスト URI |
-|---|---|
-| **Anthropic Messages API** | `/v1/messages` |
-| **OpenAI API** | `/v1/models`, `/v1/responses`, `/v1/chat/completions`, `/v1/embeddings`, `/v1/completions` |
-
-### 認証ヘッダー
-
-- **OpenAI API**:
-  - `Authorization: Bearer <token>`（大文字・小文字不問）
-- **Anthropic Messages API**:
-  - `Authorization: Bearer <token>`
-  - `x-api-key: <token>`
-
----
+エンドポイントと認証情報の両方が許可されている場合は `200 OK` を返します。不正または期限切れの認証情報、転送ヘッダーの不足、未定義のメソッドやパスは `401 Unauthorized` になります。
 
 ## インストール
 
-### 前提条件
+### ソースコードからビルド
 
-- [Rust](https://www.rust-lang.org/) (2024 edition 以降)
-- `cargo`
-
-### ソースコードからのビルド
+Rust 2024 edition に対応した Rust ツールチェーンをインストールし、次を実行します。
 
 ```bash
 git clone https://github.com/SiLeader/llm-auth-verifier.git
@@ -113,107 +54,151 @@ cd llm-auth-verifier
 cargo build --release
 ```
 
-ビルドが完了すると、バイナリは `target/release/llm-auth-verifier` に生成されます。
+バイナリは `target/release/llm-auth-verifier` に生成されます。
 
----
+### コンテナイメージ
+
+`ghcr.io/sileader/llm-auth-verifier` が公開されています。設定ファイルをデフォルトパスに読み取り専用でマウントします。
+
+```bash
+docker run --rm \
+  -p 9731:9731 \
+  -v "$PWD/config.toml:/etc/llm-auth-verifier/config.toml:ro" \
+  ghcr.io/sileader/llm-auth-verifier:latest
+```
+
+イメージは `0.0.0.0:9731` で待ち受け、UID/GID `1000:1000` で動作します。マウントするファイルには、このユーザーからの読み取り権限が必要です。
 
 ## 使い方
 
-### コマンドラインオプション
+```text
+Usage: llm-auth-verifier [OPTIONS] [COMMAND]
+
+Commands:
+  caddy-config
+  traefik-config
+  nginx-config
+  predefined-apis
+
+Options:
+      --listen <LISTEN>  Listen host and port [default: 127.0.0.1:9731]
+      --config <CONFIG>  Path to configuration file [default: /etc/llm-auth-verifier/config.toml]
+  -h, --help             Print help
+```
+
+任意の設定ファイルを指定してサーバーを起動します。
 
 ```bash
-llm-auth-verifier [OPTIONS]
+llm-auth-verifier --listen 127.0.0.1:9731 --config /path/to/config.toml
 ```
 
-| オプション | デフォルト値 | 説明 |
-|---|---|---|
-| `--listen <LISTEN>` | `127.0.0.1:9731` | バインドするホストとポート |
-| `--tokens <TOKENS>` | `/etc/llm-auth-verifier/tokens.toml` | トークン設定ファイル（TOML）のパス |
-| `--caddy` | - | Caddy の `forward_auth` 設定ブロックを出力して終了 |
-| `-h, --help` | - | ヘルプメッセージを表示 |
-
-### サーバーの起動
+ログのフィルターは `RUST_LOG` で変更できます。例:
 
 ```bash
-# 設定ファイルのパスとリッスンアドレスを指定して起動
-llm-auth-verifier --listen 127.0.0.1:9731 --tokens /path/to/tokens.toml
+RUST_LOG=llm_auth_verifier=debug llm-auth-verifier --config ./config.toml
 ```
 
-### Caddy 設定の出力
-
-Caddyfile に記載すべきディレクティブをコマンドから出力できます:
-
-```bash
-llm-auth-verifier --listen 127.0.0.1:9731 --caddy
-```
-
-出力例:
-```caddy
-forward_auth 127.0.0.1:9731 {
-    uri /verify
-}
-```
-
----
+Ctrl+C、および Unix では `SIGTERM` を受け取るとグレースフルシャットダウンします。
 
 ## 設定
 
-設定ファイルは TOML 形式で記述します。**静的トークン（Static Tokens）** と **OpenID Connect (OIDC)** の 2 種類の設定に対応しています。
+TOML 設定ファイルは、トップレベルの `[api]`、`[[tokens]]`、`[[oidc]]` で構成されます。
 
-### 静的トークン設定
+### API の選択
 
-各 `[[tokens]]` エントリでトークンルールを定義します:
-
-- `raw` *(文字列, 省略可)*: トークンの平文字列。
-- `sha256` *(文字列, 省略可)*: トークンの小文字 64 文字 16 進数 SHA-256 ハッシュ。
-- `sha512` *(文字列, 省略可)*: トークンの小文字 128 文字 16 進数 SHA-512 ハッシュ。
-- `api` *(文字列, 省略可)*: トークンの対象 API を `"openai"` または `"anthropic"` に限定。省略時は両方で有効。
-- `expire_at` *(文字列, 省略可)*: RFC 3339 形式の有効期限日時（例: `2026-12-31T23:59:59Z`）。
-
-> **注意**: 各トークンエントリには `raw`、`sha256`、`sha512` のうち少なくとも 1 つの指定が必須です。平文シークレットの保存を避けるため、ハッシュ化トークン（`sha256` または `sha512`）の使用を推奨します。
-
-#### トークンハッシュの生成方法
-
-```bash
-# SHA-256 ハッシュ:
-echo -n "my-secret-token" | sha256sum | cut -d' ' -f1
-
-# SHA-512 ハッシュ:
-echo -n "my-secret-token" | sha512sum | cut -d' ' -f1
-```
-
-### OpenID Connect (OIDC) / JWT 設定
-
-各 `[[oidc]]` エントリで OIDC プロバイダーに対する JWT 検証を設定します:
-
-- `issuer` *(文字列, 必須)*: OIDC Issuer URL（`/.well-known/openid-configuration` を提供している必要があります）。
-- `audiences` *(文字列配列, 必須)*: 許容する `aud` クレーム一覧。
-- `subjects` *(文字列配列, 必須)*: 許容する `sub` クレーム一覧。
-- `cache_ttl` *(文字列, 省略可)*: JWKS キャッシュの有効期間（例: `"12h"`, `"1h"`, `"30m"`）。デフォルトは `12h`。
-
-### `tokens.toml` の完全な設定例
+組み込みのプロバイダープリセットを 1 つ選択します。
 
 ```toml
-# OpenAI / Anthropic の両方で使用できる平文トークン
-[[tokens]]
-raw = "sk-plain-text-token-12345"
+[api]
+provider = "v-llm" # llama-cpp、ollama、lm-studio、v-llm のいずれか
+```
 
-# 有効期限付きの SHA-256 ハッシュトークン
+`[api]` セクション全体を省略した場合は `llama-cpp` プリセットが使われます。各プリセットでは、そのプロバイダーが実装するメソッドとパスだけが有効になります。詳細は [predefined-apis.md](predefined-apis.md) または次のコマンドで確認できます。
+
+```bash
+llm-auth-verifier predefined-apis
+llm-auth-verifier predefined-apis --provider v-llm
+```
+
+`named_apis` を使うと、定義済み API を個別に追加できます。`provider` のない `[api]` セクションは許可リストとして利用できます。
+
+```toml
+[api]
+named_apis = [
+  "openai/chat-completions",
+  "anthropic/messages",
+]
+```
+
+カスタムエンドポイントでは、完全一致と正規表現によるパスマッチを利用できます。
+
+```toml
+[api]
+provider = "ollama"
+
+[[api.custom_apis]]
+name = "custom/rerank"
+method = "POST"
+path = "/v1/rerank"
+path_type = "exact"
+
+[[api.custom_apis]]
+name = "custom/model-files"
+method = "GET"
+path = "^/models/[0-9]+/files$"
+path_type = "regex"
+```
+
+カスタム API の `name` は省略でき、その場合は `<METHOD>:<PATH>` になります。カスタム API は Bearer 認証を受け付けますが、OpenAI／Anthropic の API ファミリーには分類されません。トークンのアクセス範囲をカスタム API に限定する場合は、従来の `api` ではなく `allowed_apis` を使用してください。
+
+### 静的トークン
+
+各 `[[tokens]]` エントリで次のフィールドを指定できます。`raw`、`sha256`、`sha512` のうち、少なくとも 1 つが必要です。
+
+| フィールド | 必須 | 説明 |
+|---|---:|---|
+| `name` | いいえ | 監査ログに記録する名前。省略時は `index:<n>`。 |
+| `raw` | 条件付き | 平文トークン。 |
+| `sha256` | 条件付き | 16 進数で表した SHA-256 ダイジェスト。 |
+| `sha512` | 条件付き | 16 進数で表した SHA-512 ダイジェスト。複数のトークン値を指定した場合は `sha512`、`sha256`、`raw` の順に優先。 |
+| `allowed_apis` | いいえ | このトークンでアクセスできる API 名。省略時は設定済みの全 API を許可。 |
+| `api` | いいえ | 従来の API ファミリー制限。`openai` または `anthropic`。 |
+| `expire_at` | いいえ | RFC 3339 形式の有効期限。 |
+
+ハッシュ化したトークンの保存を推奨します。
+
+```bash
+printf %s "my-secret-token" | sha256sum | cut -d' ' -f1
+printf %s "my-secret-token" | sha512sum | cut -d' ' -f1
+```
+
+設定例:
+
+```toml
 [[tokens]]
-sha256 = "4c5dc9b7708905f77f5e5d16316b5dfb425e68cb326dcd55a860e90a7707031e"
+name = "chat-client"
+sha256 = "ea5add57437cbf20af59034d7ed17968dcc56767b41965fcc5b376d45db8b4a3"
+allowed_apis = ["openai/chat-completions", "openai/models"]
 expire_at = "2026-12-31T23:59:59Z"
 
-# OpenAI API エンドポイントのみに限定した SHA-512 ハッシュトークン
 [[tokens]]
-sha512 = "1fb3d3b3ed263ff715b48dfad17cc9e69697ccc59ba7c57922c7bc5e5312494542b788e22ce84463678e266e71ce0c401c9bdef9587b7c2a9d7dca4b38a031e8"
-api = "openai"
-
-# Anthropic API エンドポイントのみに限定したトークン
-[[tokens]]
+name = "anthropic-client"
 raw = "sk-ant-restricted-token"
 api = "anthropic"
+```
 
-# OpenID Connect (JWT) 検証
+### OpenID Connect / JWT
+
+各 `[[oidc]]` エントリで 1 つの Issuer を設定します。
+
+| フィールド | 必須 | 説明 |
+|---|---:|---|
+| `issuer` | はい | Issuer URL。`/.well-known/openid-configuration` で Discovery Document を提供する必要があります。 |
+| `audiences` | はい | 許可する `aud` クレーム。 |
+| `subjects` | いいえ | 許可する `sub` クレーム。省略時は任意の Subject を許可。 |
+| `cache_ttl` | いいえ | JWKS キャッシュ期間。`30m`、`1h`、`12h` など。デフォルトは `12h`。 |
+
+```toml
 [[oidc]]
 issuer = "https://auth.example.com"
 audiences = ["llm-service"]
@@ -221,79 +206,108 @@ subjects = ["user-123", "service-account-abc"]
 cache_ttl = "6h"
 ```
 
----
+JWT には `kid`、`sub`、`aud`、`iss`、`exp` が必要です。起動時にキーを取得し、キャッシュが古くなった場合に更新します。未知の `kid` を検出した場合も、レート制限付きで更新を試みます。
 
-## Caddy との連携
+### 完全な設定例
 
-### `Caddyfile` の設定例
+```toml
+[api]
+provider = "ollama"
+named_apis = ["openai/audio-transcriptions"]
 
-ポート `8000` で稼働しているローカル LLM サーバーを保護する Caddyfile の例です:
+[[api.custom_apis]]
+name = "custom/rerank"
+method = "POST"
+path = "/v1/rerank"
+path_type = "exact"
+
+[[tokens]]
+name = "application"
+raw = "replace-with-a-secret"
+allowed_apis = ["openai/chat-completions", "custom/rerank"]
+
+[[oidc]]
+issuer = "https://auth.example.com"
+audiences = ["llm-service"]
+cache_ttl = "12h"
+```
+
+## リバースプロキシとの連携
+
+`--listen` は、サーバーの待ち受けアドレスと、設定生成コマンドが出力する接続先の両方に使われます。このグローバルオプションはサブコマンドより前に指定してください。
+
+### Caddy
+
+```bash
+llm-auth-verifier --listen 127.0.0.1:9731 caddy-config
+```
 
 ```caddy
 llm.example.com {
-    # llm-auth-verifier に認証を委譲
     forward_auth 127.0.0.1:9731 {
         uri /verify
     }
 
-    # ローカル LLM サーバー（vLLM, Ollama, llama.cpp 等）へリバースプロキシ
     reverse_proxy 127.0.0.1:8000
 }
 ```
 
----
+### nginx
 
-## テストとリクエスト例
-
-### 1. OpenAI Chat Completions リクエスト
+内部認証用の location を生成します。
 
 ```bash
-curl -X POST https://llm.example.com/v1/chat/completions \
-  -H "Authorization: Bearer sk-plain-text-token-12345" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
+llm-auth-verifier --listen 127.0.0.1:9731 nginx-config
 ```
 
-### 2. Anthropic Messages リクエスト
+保護する location から `auth_request` で参照します。
 
-`x-api-key` ヘッダーを使用する場合:
+```nginx
+location = /__/llm-auth-verifier/verify {
+    internal;
+    proxy_pass http://127.0.0.1:9731/verify;
+    proxy_set_header X-Forwarded-Uri $request_uri;
+    proxy_set_header X-Forwarded-Method $request_method;
+}
+
+location / {
+    auth_request /__/llm-auth-verifier/verify;
+    proxy_pass http://127.0.0.1:8000;
+}
+```
+
+### Traefik
+
+YAML、TOML、Docker labels、Consul Catalog tags、Kubernetes CRD 形式の動的ミドルウェア設定を生成できます。
+
 ```bash
-curl -X POST https://llm.example.com/v1/messages \
+llm-auth-verifier --listen llm-auth-verifier:9731 traefik-config
+llm-auth-verifier --listen llm-auth-verifier:9731 traefik-config --format kubernetes --name llm-auth
+```
+
+全形式とオプションは `llm-auth-verifier traefik-config --help` で確認できます。生成したミドルウェアを LLM サーバーの前段にある Router に設定してください。
+
+## リクエスト例
+
+OpenAI 互換リクエスト:
+
+```bash
+curl https://llm.example.com/v1/chat/completions \
+  -H "Authorization: Bearer replace-with-a-secret" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"example-model","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Anthropic 互換リクエスト:
+
+```bash
+curl https://llm.example.com/v1/messages \
   -H "x-api-key: sk-ant-restricted-token" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-3-5-sonnet",
-    "max_tokens": 1024,
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
+  -d '{"model":"example-model","max_tokens":128,"messages":[{"role":"user","content":"Hello"}]}'
 ```
-
-`Authorization: Bearer` ヘッダーを使用する場合:
-```bash
-curl -X POST https://llm.example.com/v1/messages \
-  -H "Authorization: Bearer sk-plain-text-token-12345" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-3-5-sonnet",
-    "max_tokens": 1024,
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-### 3. 認証失敗時
-
-不正なトークン、期限切れトークン、または未対応のパスに対するリクエストは拒否されます:
-```
-HTTP/1.1 401 Unauthorized
-```
-
----
 
 ## ライセンス
 
-本プロジェクトは [Apache License 2.0](LICENSE) の下で公開されています。
+[Apache License 2.0](LICENSE) の下で公開されています。
