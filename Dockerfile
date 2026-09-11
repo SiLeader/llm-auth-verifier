@@ -15,4 +15,4 @@ COPY --from=builder /llm-auth-verifier /llm-auth-verifier
 
 USER 1000:1000
 
-CMD ["/llm-auth-verifier"]
+CMD ["/llm-auth-verifier", "--listen", "0.0.0.0:9731"]

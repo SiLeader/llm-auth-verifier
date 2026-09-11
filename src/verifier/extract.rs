@@ -4,6 +4,7 @@ use crate::verifier::Verifier;
 use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, Method, Uri};
 use std::str::FromStr;
+use tracing::debug;
 
 impl Verifier {
     pub(super) fn extract_api<'a, 'b>(
@@ -14,16 +15,22 @@ impl Verifier {
     }
 }
 
-fn check_api_type<'a>(detector: &'a ApiDetector, headers: &HeaderMap) -> Option<&'a AiApi> {
+fn get_api<'a>(detector: &'a ApiDetector, headers: &HeaderMap) -> Option<&'a AiApi> {
+    debug!("getting api");
     let method = headers
         .get("x-forwarded-method")
         .and_then(|v| v.to_str().ok())?;
+    debug!("got api method: {}", method);
     let uri = headers
         .get("x-forwarded-uri")
         .and_then(|s| s.to_str().ok())?;
+    debug!("got api uri: {}", uri);
 
+    debug!("parsing method and uri");
     let method = Method::from_str(method).ok()?;
+    debug!("parsed api method: {}", method);
     let uri: Uri = uri.parse().ok()?;
+    debug!("parsed api uri: {}", uri);
     detector.detect(&method, uri.path())
 }
 
@@ -31,7 +38,7 @@ fn extract_api_key<'a, 'b>(
     detector: &'a ApiDetector,
     headers: &'b HeaderMap,
 ) -> Option<(&'a AiApi, &'b str)> {
-    let api = check_api_type(detector, headers)?;
+    let api = get_api(detector, headers)?;
     // OpenAI / current Anthropic style:
     //
     // Authorization: Bearer xxx
@@ -39,9 +46,11 @@ fn extract_api_key<'a, 'b>(
         && let Ok(value) = value.to_str()
         && let Some((scheme, token)) = value.split_once(" ")
     {
+        debug!("got api authorization scheme: {}", scheme);
         let scheme = scheme.trim();
         let token = token.trim();
         if scheme.eq_ignore_ascii_case("bearer") {
+            debug!("token is bearer");
             return Some((api, token));
         }
     }
@@ -50,6 +59,7 @@ fn extract_api_key<'a, 'b>(
         // Anthropic-compatible legacy style:
         //
         // x-api-key: xxx
+        debug!("api type is anthropic");
         headers
             .get("x-api-key")
             .and_then(|value| value.to_str().ok())

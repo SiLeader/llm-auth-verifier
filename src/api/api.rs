@@ -1,6 +1,7 @@
 use crate::config::ApiType;
 use axum::http::Method;
 use regex::Regex;
+use tracing::debug;
 
 #[derive(Debug, Clone)]
 pub struct AiApi {
@@ -61,13 +62,30 @@ impl AiApi {
     }
 
     pub fn matches(&self, method: &Method, path: &str) -> bool {
+        debug!(
+            "checking {method}: {path} request for {}: {:?}",
+            self.method, path
+        );
         if self.method != method {
+            debug!("method mismatch");
             return false;
         }
-        match &self.path {
+        let is_ok = match &self.path {
             ApiPath::Exact(p) => p == path,
             ApiPath::Regex(r) => r.is_match(path),
+        };
+        if is_ok {
+            debug!(
+                "matched {method}: {path} request for {}: {:?}",
+                self.method, path
+            );
+        } else {
+            debug!(
+                "unmatched {method}: {path} request for {}: {:?}",
+                self.method, path
+            );
         }
+        is_ok
     }
 }
 
