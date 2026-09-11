@@ -14,11 +14,6 @@ impl ApiDetector {
     }
 
     pub fn detect(&self, method: &Method, path: &str) -> Option<&AiApi> {
-        for api in &self.apis {
-            if api.matches(method, path) {
-                return Some(&api);
-            }
-        }
-        None
+        self.apis.iter().find(|api| api.matches(method, path))
     }
 }

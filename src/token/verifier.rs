@@ -15,6 +15,7 @@ pub struct TokenVerifier {
 struct Token {
     name: String,
     allowed_apis: Option<HashSet<String>>,
+    api: Option<crate::config::ApiType>,
     expire_at: Option<DateTime<Utc>>,
     content: TokenContent,
 }
@@ -57,6 +58,7 @@ impl Token {
             Ok(Self {
                 name,
                 allowed_apis: value.allowed_apis,
+                api: value.api,
                 expire_at: value.expire_at,
                 content: TokenContent::Sha512(digest),
             })
@@ -65,6 +67,7 @@ impl Token {
             Ok(Self {
                 name,
                 allowed_apis: value.allowed_apis,
+                api: value.api,
                 expire_at: value.expire_at,
                 content: TokenContent::Sha256(digest),
             })
@@ -72,7 +75,8 @@ impl Token {
             Ok(Self {
                 name,
                 allowed_apis: value.allowed_apis,
-                expire_at: None,
+                api: value.api,
+                expire_at: value.expire_at,
                 content: TokenContent::Raw(raw),
             })
         } else {
@@ -82,7 +86,12 @@ impl Token {
 
     fn verify(&self, api: &AiApi, token: &str) -> bool {
         if let Some(at) = &self.allowed_apis
-            && at.contains(api.name())
+            && !at.contains(api.name())
+        {
+            return false;
+        }
+        if let Some(expected) = self.api
+            && api.api_type() != Some(expected)
         {
             return false;
         }
@@ -111,5 +120,91 @@ impl Token {
             api_name=%api.name()
         );
         is_ok
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TokenVerifier;
+    use crate::api::{AiApi, ApiPath};
+    use crate::config::ApiType;
+    use crate::token::TokenConfig;
+    use axum::http::Method;
+    use chrono::{Duration, Utc};
+    use sha2::Digest;
+    use std::collections::HashSet;
+
+    fn config(raw: &str) -> TokenConfig {
+        TokenConfig {
+            name: Some("test".to_owned()),
+            allowed_apis: None,
+            raw: Some(raw.to_owned()),
+            sha256: None,
+            sha512: None,
+            expire_at: None,
+            api: None,
+        }
+    }
+
+    fn openai_api(name: &str) -> AiApi {
+        AiApi::openai(name, Method::POST, ApiPath::exact("/openai"))
+    }
+
+    fn anthropic_api(name: &str) -> AiApi {
+        AiApi::anthropic(name, Method::POST, ApiPath::exact("/anthropic"))
+    }
+
+    #[test]
+    fn verifies_raw_and_hashed_tokens() {
+        let raw = config("raw-secret");
+        let mut sha256 = config("");
+        sha256.raw = None;
+        sha256.sha256 = Some(hex::encode(sha2::Sha256::digest(b"hashed-secret")));
+        let mut sha512 = config("");
+        sha512.raw = None;
+        sha512.sha512 = Some(hex::encode(sha2::Sha512::digest(b"hashed-secret")));
+        let verifier = TokenVerifier::try_new(vec![raw, sha256, sha512]).unwrap();
+        let api = openai_api("openai/chat-completions");
+
+        assert!(verifier.verify(&api, "raw-secret"));
+        assert!(verifier.verify(&api, "hashed-secret"));
+        assert!(!verifier.verify(&api, "wrong-secret"));
+    }
+
+    #[test]
+    fn allowed_apis_restricts_token_to_listed_names() {
+        let mut token = config("secret");
+        token.allowed_apis = Some(HashSet::from(["openai/chat-completions".to_owned()]));
+        let verifier = TokenVerifier::try_new(vec![token]).unwrap();
+
+        assert!(verifier.verify(&openai_api("openai/chat-completions"), "secret"));
+        assert!(!verifier.verify(&openai_api("openai/responses"), "secret"));
+    }
+
+    #[test]
+    fn api_type_restricts_token_to_matching_api_family() {
+        let mut token = config("secret");
+        token.api = Some(ApiType::Anthropic);
+        let verifier = TokenVerifier::try_new(vec![token]).unwrap();
+
+        assert!(verifier.verify(&anthropic_api("anthropic/messages"), "secret"));
+        assert!(!verifier.verify(&openai_api("openai/chat-completions"), "secret"));
+    }
+
+    #[test]
+    fn expired_raw_token_is_rejected() {
+        let mut token = config("secret");
+        token.expire_at = Some(Utc::now() - Duration::seconds(1));
+        let verifier = TokenVerifier::try_new(vec![token]).unwrap();
+
+        assert!(!verifier.verify(&openai_api("openai/chat-completions"), "secret"));
+    }
+
+    #[test]
+    fn token_without_content_is_rejected() {
+        let mut token = config("");
+        token.raw = None;
+
+        assert!(TokenVerifier::try_new(vec![token]).is_err());
     }
 }

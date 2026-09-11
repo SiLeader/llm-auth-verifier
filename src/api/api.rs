@@ -57,7 +57,7 @@ impl AiApi {
             return false;
         }
         match &self.path {
-            ApiPath::Exact(p) => p.as_str() == method,
+            ApiPath::Exact(p) => p == path,
             ApiPath::Regex(r) => r.is_match(path),
         }
     }
@@ -70,5 +70,35 @@ impl ApiPath {
 
     pub fn regex(path: Regex) -> Self {
         Self::Regex(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AiApi, ApiPath};
+    use axum::http::Method;
+    use regex::Regex;
+
+    #[test]
+    fn exact_path_requires_matching_method_and_path() {
+        let api = AiApi::new("test", Method::POST, ApiPath::exact("/v1/chat/completions"));
+
+        assert!(api.matches(&Method::POST, "/v1/chat/completions"));
+        assert!(!api.matches(&Method::GET, "/v1/chat/completions"));
+        assert!(!api.matches(&Method::POST, "/v1/completions"));
+    }
+
+    #[test]
+    fn regex_path_requires_matching_method_and_pattern() {
+        let api = AiApi::new(
+            "test",
+            Method::GET,
+            ApiPath::regex(Regex::new(r"^/v1/models(?:/[\w_-]+)?$").unwrap()),
+        );
+
+        assert!(api.matches(&Method::GET, "/v1/models"));
+        assert!(api.matches(&Method::GET, "/v1/models/example-model"));
+        assert!(!api.matches(&Method::POST, "/v1/models"));
+        assert!(!api.matches(&Method::GET, "/v1/models/example-model/details"));
     }
 }

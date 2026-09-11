@@ -1,4 +1,3 @@
-use crate::api::ApiDetector;
 use crate::config::Config;
 use crate::verifier::Verifier;
 use crate::verifier_endpoint::verify_auth;

@@ -5,18 +5,21 @@ use regex::Regex;
 use serde::Deserialize;
 use std::str::FromStr;
 
-mod api;
 mod builder;
+#[path = "api.rs"]
+mod definition;
 mod detector;
 mod predefined;
 
-pub use api::*;
+pub use definition::*;
 pub use detector::*;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ApiConfig {
     provider: Option<Provider>,
+    #[serde(default)]
     custom_apis: Vec<CustomApi>,
+    #[serde(default)]
     named_apis: Vec<String>,
 }
 
@@ -65,5 +68,113 @@ impl ApiConfig {
         }
         builder.use_api_named(self.named_apis);
         Ok(builder.build())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApiConfig, ApiDetector};
+    use crate::config::ApiType;
+    use axum::http::Method;
+
+    fn detector(config: &str) -> ApiDetector {
+        let config = toml::from_str::<ApiConfig>(config).unwrap();
+        ApiDetector::try_new(config).unwrap()
+    }
+
+    #[test]
+    fn provider_selects_supported_typed_apis() {
+        let detector = detector(r#"provider = "llama-cpp""#);
+
+        let openai = detector
+            .detect(&Method::POST, "/v1/chat/completions")
+            .unwrap();
+        let anthropic = detector.detect(&Method::POST, "/v1/messages").unwrap();
+
+        assert_eq!(openai.name(), "openai/chat-completions");
+        assert_eq!(openai.api_type(), Some(ApiType::OpenAi));
+        assert_eq!(anthropic.name(), "anthropic/messages");
+        assert_eq!(anthropic.api_type(), Some(ApiType::Anthropic));
+        assert!(
+            detector
+                .detect(&Method::POST, "/v1/audio/transcriptions")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn vllm_provider_includes_vllm_only_apis() {
+        let detector = detector(r#"provider = "v-llm""#);
+
+        assert!(
+            detector
+                .detect(&Method::POST, "/v1/audio/transcriptions")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn named_api_can_be_enabled_without_provider() {
+        let detector = detector(r#"named_apis = ["openai/chat-completions"]"#);
+
+        let api = detector
+            .detect(&Method::POST, "/v1/chat/completions")
+            .unwrap();
+        assert_eq!(api.name(), "openai/chat-completions");
+        assert_eq!(api.api_type(), Some(ApiType::OpenAi));
+        assert!(detector.detect(&Method::POST, "/v1/responses").is_none());
+    }
+
+    #[test]
+    fn custom_exact_and_regex_apis_are_detected() {
+        let detector = detector(
+            r#"
+            [[custom_apis]]
+            name = "custom/exact"
+            method = "POST"
+            path = "/custom"
+            path_type = "exact"
+
+            [[custom_apis]]
+            method = "GET"
+            path = "^/models/[0-9]+$"
+            path_type = "regex"
+            "#,
+        );
+
+        assert_eq!(
+            detector.detect(&Method::POST, "/custom").unwrap().name(),
+            "custom/exact"
+        );
+        assert_eq!(
+            detector.detect(&Method::GET, "/models/42").unwrap().name(),
+            "GET:^/models/[0-9]+$"
+        );
+        assert!(detector.detect(&Method::GET, "/models/latest").is_none());
+    }
+
+    #[test]
+    fn invalid_custom_api_method_or_regex_is_rejected() {
+        let invalid_method = toml::from_str::<ApiConfig>(
+            r#"
+            [[custom_apis]]
+            method = "NOT A METHOD"
+            path = "/custom"
+            path_type = "exact"
+            "#,
+        )
+        .unwrap();
+        let invalid_regex = toml::from_str::<ApiConfig>(
+            r#"
+            [[custom_apis]]
+            method = "GET"
+            path = "["
+            path_type = "regex"
+            "#,
+        )
+        .unwrap();
+
+        assert!(ApiDetector::try_new(invalid_method).is_err());
+        assert!(ApiDetector::try_new(invalid_regex).is_err());
     }
 }

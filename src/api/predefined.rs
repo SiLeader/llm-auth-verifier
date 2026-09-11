@@ -57,7 +57,7 @@ impl Default for PredefinedApis {
             apis: vec![
                 // OpenAI compatible APIs
                 AiApiWithProvider::new(
-                    AiApi::new(
+                    AiApi::openai(
                         "openai/chat-completions",
                         Method::POST,
                         ApiPath::exact("/v1/chat/completions"),
@@ -70,7 +70,7 @@ impl Default for PredefinedApis {
                     ],
                 ),
                 AiApiWithProvider::new(
-                    AiApi::new(
+                    AiApi::openai(
                         "openai/chat-completions-batch",
                         Method::POST,
                         ApiPath::exact("/v1/chat/completions/batch"),
@@ -78,7 +78,7 @@ impl Default for PredefinedApis {
                     &[Provider::VLlm],
                 ),
                 AiApiWithProvider::new(
-                    AiApi::new(
+                    AiApi::openai(
                         "openai/responses",
                         Method::POST,
                         ApiPath::exact("/v1/responses"),
@@ -91,7 +91,7 @@ impl Default for PredefinedApis {
                     ],
                 ),
                 AiApiWithProvider::new(
-                    AiApi::new(
+                    AiApi::openai(
                         "openai/completions",
                         Method::POST,
                         ApiPath::exact("/v1/completions"),
@@ -104,7 +104,7 @@ impl Default for PredefinedApis {
                     ],
                 ),
                 AiApiWithProvider::new(
-                    AiApi::new(
+                    AiApi::openai(
                         "openai/embeddings",
                         Method::POST,
                         ApiPath::exact("/v1/embeddings"),
@@ -117,10 +117,10 @@ impl Default for PredefinedApis {
                     ],
                 ),
                 AiApiWithProvider::new(
-                    AiApi::new(
+                    AiApi::openai(
                         "openai/models",
                         Method::GET,
-                        ApiPath::regex(Regex::new(r#"/v1/models(/[\w\-_]+)?"#).unwrap()),
+                        ApiPath::regex(Regex::new(r"^/v1/models(?:/[\w_-]+)?$").unwrap()),
                     ),
                     &[
                         Provider::LlamaCpp,
@@ -130,7 +130,7 @@ impl Default for PredefinedApis {
                     ],
                 ),
                 AiApiWithProvider::new(
-                    AiApi::new(
+                    AiApi::openai(
                         "openai/audio-transcriptions",
                         Method::POST,
                         ApiPath::exact("/v1/audio/transcriptions"),
@@ -138,7 +138,7 @@ impl Default for PredefinedApis {
                     &[Provider::VLlm],
                 ),
                 AiApiWithProvider::new(
-                    AiApi::new(
+                    AiApi::openai(
                         "openai/audio-translations",
                         Method::POST,
                         ApiPath::exact("/v1/audio/translations"),
@@ -147,7 +147,7 @@ impl Default for PredefinedApis {
                 ),
                 // Anthropic compatible API
                 AiApiWithProvider::new(
-                    AiApi::new(
+                    AiApi::anthropic(
                         "anthropic/messages",
                         Method::POST,
                         ApiPath::exact("/v1/messages"),

@@ -61,13 +61,20 @@ fn extract_api_key<'a, 'b>(
 
 #[cfg(test)]
 mod tests {
-    use super::{ApiType, extract_api_key};
+    use super::extract_api_key;
     use crate::api::{ApiConfig, ApiDetector, Provider};
+    use crate::config::ApiType;
     use axum::http::HeaderMap;
 
-    fn headers_with_authorization(value: &'static str) -> HeaderMap {
+    fn headers(method: &'static str, uri: &'static str) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-uri", "/v1/chat/completions".parse().unwrap());
+        headers.insert("x-forwarded-method", method.parse().unwrap());
+        headers.insert("x-forwarded-uri", uri.parse().unwrap());
+        headers
+    }
+
+    fn headers_with_authorization(value: &'static str) -> HeaderMap {
+        let mut headers = headers("POST", "/v1/chat/completions");
         headers.insert("authorization", value.parse().unwrap());
         headers
     }
@@ -76,14 +83,28 @@ mod tests {
         ApiDetector::try_new(ApiConfig::for_provider(Provider::LlamaCpp)).unwrap()
     }
 
+    fn assert_extracted(
+        result: Option<(&crate::api::AiApi, &str)>,
+        expected_name: &str,
+        expected_type: ApiType,
+        expected_token: &str,
+    ) {
+        let (api, token) = result.unwrap();
+        assert_eq!(api.name(), expected_name);
+        assert_eq!(api.api_type(), Some(expected_type));
+        assert_eq!(token, expected_token);
+    }
+
     #[test]
     fn accepts_case_insensitive_bearer_scheme() {
         let detector = detector();
         let headers = headers_with_authorization("bearer secret");
 
-        assert_eq!(
+        assert_extracted(
             extract_api_key(&detector, &headers),
-            Some((ApiType::OpenAi, "secret"))
+            "openai/chat-completions",
+            ApiType::OpenAi,
+            "secret",
         );
     }
 
@@ -92,9 +113,11 @@ mod tests {
         let detector = detector();
         let headers = headers_with_authorization("BEARER   secret");
 
-        assert_eq!(
+        assert_extracted(
             extract_api_key(&detector, &headers),
-            Some((ApiType::OpenAi, "secret"))
+            "openai/chat-completions",
+            ApiType::OpenAi,
+            "secret",
         );
     }
 
@@ -103,6 +126,56 @@ mod tests {
         let detector = detector();
         let headers = headers_with_authorization("Basic secret");
 
-        assert_eq!(extract_api_key(&detector, &headers), None);
+        assert!(extract_api_key(&detector, &headers).is_none());
+    }
+
+    #[test]
+    fn accepts_anthropic_api_key_header() {
+        let detector = detector();
+        let mut headers = headers("POST", "/v1/messages");
+        headers.insert("x-api-key", "secret".parse().unwrap());
+
+        assert_extracted(
+            extract_api_key(&detector, &headers),
+            "anthropic/messages",
+            ApiType::Anthropic,
+            "secret",
+        );
+    }
+
+    #[test]
+    fn rejects_api_key_header_for_openai_api() {
+        let detector = detector();
+        let mut headers = headers("POST", "/v1/chat/completions");
+        headers.insert("x-api-key", "secret".parse().unwrap());
+
+        assert!(extract_api_key(&detector, &headers).is_none());
+    }
+
+    #[test]
+    fn uses_uri_path_without_query_when_detecting_api() {
+        let detector = detector();
+        let mut headers = headers("POST", "/v1/chat/completions?stream=true");
+        headers.insert("authorization", "Bearer secret".parse().unwrap());
+
+        assert_extracted(
+            extract_api_key(&detector, &headers),
+            "openai/chat-completions",
+            ApiType::OpenAi,
+            "secret",
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_non_matching_forwarded_request() {
+        let detector = detector();
+        let mut missing_method = HeaderMap::new();
+        missing_method.insert("x-forwarded-uri", "/v1/chat/completions".parse().unwrap());
+        missing_method.insert("authorization", "Bearer secret".parse().unwrap());
+        let mut wrong_method = headers("GET", "/v1/chat/completions");
+        wrong_method.insert("authorization", "Bearer secret".parse().unwrap());
+
+        assert!(extract_api_key(&detector, &missing_method).is_none());
+        assert!(extract_api_key(&detector, &wrong_method).is_none());
     }
 }
