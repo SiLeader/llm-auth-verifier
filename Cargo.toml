@@ -2,6 +2,8 @@
 name = "llm-auth-verifier"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+license-file = "LICENSE"
 
 [dependencies]
 axum = "0.8.9"
@@ -24,8 +26,6 @@ constant_time_eq = "0.6.0"
 
 jsonwebtoken = { version = "11.0.0", features = ["rust_crypto"] }
 reqwest = { version = "0.13.5", features = ["json"] }
-
-base64 = "0.23.1"
 
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }

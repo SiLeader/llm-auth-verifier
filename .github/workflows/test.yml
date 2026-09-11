@@ -1,0 +1,153 @@
+name: Run Rust unit tests and lints
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+jobs:
+  unit-test:
+    if: github.event.pull_request.draft == false
+    name: Unit Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        BUILD_TARGET: [ release ]
+    steps:
+      - name: Checkout codes
+        uses: actions/checkout@v7
+
+      - name: Cache Rust build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-build-unit-test-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-build-unit-test
+            ${{ runner.os }}-${{ runner.arch }}-build
+            ${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Run unit tests
+        env:
+          RUSTFLAGS: "-Dwarnings"
+        run: cargo test --workspace --profile ${{ matrix.BUILD_TARGET }}
+
+  license-check:
+    if: github.event.pull_request.draft == false
+    name: License check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout codes
+        uses: actions/checkout@v7
+
+      - name: Cache cargo-deny
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/cargo-deny
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-deny-${{ vars.CARGO_DENY_VERSION }}
+
+      - name: Setup cargo-deny
+        run: |
+          if ! command -v cargo-deny &> /dev/null; then
+            cargo install --locked cargo-deny --version ${{ vars.CARGO_DENY_VERSION }}
+          fi
+
+      - name: Cache build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-build-license-check-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-build-license-check
+            ${{ runner.os }}-${{ runner.arch }}-build
+            ${{ runner.os }}-${{ runner.arch }}
+
+      - name: Check license
+        run: cargo deny check licenses
+
+  cargo-deny:
+    if: github.event.pull_request.draft == false
+    name: Cargo deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout codes
+        uses: actions/checkout@v7
+
+      - name: Cache cargo-deny
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/cargo-deny
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-deny-${{ vars.CARGO_DENY_VERSION }}
+
+      - name: Setup cargo-deny
+        run: |
+          if ! command -v cargo-deny &> /dev/null; then
+            cargo install --locked cargo-deny --version ${{ vars.CARGO_DENY_VERSION }}
+          fi
+
+      - name: Cache build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-build-cargo-deny-check-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-build-cargo-deny-check
+            ${{ runner.os }}-${{ runner.arch }}-build
+            ${{ runner.os }}-${{ runner.arch }}
+
+      - name: Check
+        run: cargo deny check
+
+  clippy-lint:
+    if: github.event.pull_request.draft == false
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        BUILD_TARGET: [ release ]
+    steps:
+      - name: Checkout codes
+        uses: actions/checkout@v7
+
+      - name: Cache Rust build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-build-lint-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-build-lint
+            ${{ runner.os }}-${{ runner.arch }}-build
+            ${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Run unit tests
+        env:
+          RUSTFLAGS: "-Dwarnings"
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --profile ${{ matrix.BUILD_TARGET }}
