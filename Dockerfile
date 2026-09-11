@@ -13,4 +13,6 @@ FROM scratch
 
 COPY --from=builder /llm-auth-verifier /llm-auth-verifier
 
+USER 1000:1000
+
 CMD ["/llm-auth-verifier"]
