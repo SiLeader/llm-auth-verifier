@@ -1,3 +1,4 @@
+use crate::api::AiApi;
 use crate::jwt::JwtConfig;
 use crate::jwt::download::JwkDownloader;
 use chrono::{DateTime, Duration, Utc};
@@ -6,7 +7,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use tracing::warn;
+use tracing::{info, warn};
 
 const DEFAULT_CACHE_TTL: Duration = Duration::hours(12);
 const MIN_REFRESH_INTERVAL: Duration = Duration::minutes(5);
@@ -46,8 +47,13 @@ impl JwkIssuer {
         }
     }
 
+    pub(super) fn name(&self) -> &str {
+        &self.config.issuer
+    }
+
     pub(super) async fn verify(
         &self,
+        api: &AiApi,
         alg: Algorithm,
         kid: &str,
         token: &str,
@@ -59,15 +65,21 @@ impl JwkIssuer {
             );
         }
 
-        if self.verify_cached(alg, kid, token).await? {
+        if self.verify_cached(api, alg, kid, token).await? {
             return Ok(true);
         }
 
         self.refresh_for_unknown_kid(kid).await?;
-        self.verify_cached(alg, kid, token).await
+        self.verify_cached(api, alg, kid, token).await
     }
 
-    async fn verify_cached(&self, alg: Algorithm, kid: &str, token: &str) -> anyhow::Result<bool> {
+    async fn verify_cached(
+        &self,
+        api: &AiApi,
+        alg: Algorithm,
+        kid: &str,
+        token: &str,
+    ) -> anyhow::Result<bool> {
         let keys = self.keys.read().await;
         if let Some(decoding_key) = keys.keys.get(kid) {
             let validation = {
@@ -89,12 +101,23 @@ impl JwkIssuer {
                     )
                 })?;
 
-            if !self.config.subjects.contains(&claims.claims.sub) {
+            if let Some(subjects) = &self.config.subjects
+                && !subjects.contains(&claims.claims.sub)
+            {
                 anyhow::bail!(
                     "Token claims do not match expected values for issuer {}",
                     self.config.issuer
                 );
             }
+
+            info!(
+                audit=true,
+                issuer=%self.name(),
+                name=%claims.claims.sub,
+                auth_type="oidc",
+                allowed=true,
+                api_name=%api.name()
+            );
 
             Ok(true)
         } else {
@@ -244,7 +267,7 @@ mod tests {
             JwtConfig {
                 issuer,
                 audiences: vec!["audience".to_owned()],
-                subjects: HashSet::from(["subject".to_owned()]),
+                subjects: Some(HashSet::from(["subject".to_owned()])),
                 cache_ttl: None,
             },
             keys,

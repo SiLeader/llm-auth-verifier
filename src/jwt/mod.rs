@@ -13,6 +13,6 @@ pub use key::JwtVerifier;
 pub struct JwtConfig {
     issuer: String,
     audiences: Vec<String>,
-    subjects: HashSet<String>,
+    subjects: Option<HashSet<String>>,
     cache_ttl: Option<Dur>, // Time-to-live for cached keys in seconds
 }

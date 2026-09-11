@@ -1,3 +1,4 @@
+use crate::api::ApiDetector;
 use crate::config::Config;
 use crate::verifier::Verifier;
 use crate::verifier_endpoint::verify_auth;
@@ -7,6 +8,8 @@ use clap::Parser;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+mod api;
+mod commands;
 mod config;
 mod jwt;
 mod token;
@@ -23,10 +26,10 @@ struct Args {
 
     #[arg(
         long,
-        help = "Path to tokens file",
-        default_value = "/etc/llm-auth-verifier/tokens.toml"
+        help = "Path to configuration file",
+        default_value = "/etc/llm-auth-verifier/config.toml"
     )]
-    tokens: String,
+    config: String,
 }
 
 fn caddy_config(listen: &str) -> String {
@@ -48,7 +51,7 @@ async fn main() {
         .init();
     info!("Starting LLM Auth verifier");
 
-    let config = match Config::load(args.tokens) {
+    let verifier = match Config::load(args.config) {
         Ok(c) => match Verifier::new(c).await {
             Ok(v) => v,
             Err(e) => {
@@ -64,7 +67,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/verify", get(verify_auth))
-        .with_state(config);
+        .with_state(verifier);
 
     let listener = match tokio::net::TcpListener::bind(&args.listen).await {
         Ok(l) => l,

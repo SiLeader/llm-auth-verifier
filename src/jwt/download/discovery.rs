@@ -21,6 +21,9 @@ impl JwkDownloader<'_> {
             );
         }
         let discovery: OidcDiscovery = response.json().await?;
+        if discovery.issuer != self.issuer {
+            anyhow::bail!("OIDC discovery issuer mismatch: {}", discovery.issuer);
+        }
         Ok(discovery)
     }
 }

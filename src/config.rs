@@ -1,3 +1,4 @@
+use crate::api::ApiConfig;
 use crate::jwt::JwtConfig;
 use crate::token::TokenConfig;
 use anyhow::Context;
@@ -10,6 +11,8 @@ pub struct Config {
     pub tokens: Vec<TokenConfig>,
     #[serde(default)]
     pub oidc: Vec<JwtConfig>,
+    #[serde(default)]
+    pub api: ApiConfig,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Deserialize)]

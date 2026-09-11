@@ -1,6 +1,8 @@
+use crate::api::AiApi;
 use crate::jwt::JwtConfig;
 use crate::jwt::download::JwkDownloader;
 use crate::jwt::issuer::JwkIssuer;
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct JwtVerifier {
@@ -19,7 +21,7 @@ impl JwtVerifier {
         Ok(Self { jwks })
     }
 
-    pub async fn verify(&self, token: &str) -> anyhow::Result<()> {
+    pub async fn verify(&self, api: &AiApi, token: &str) -> anyhow::Result<()> {
         let header = jsonwebtoken::decode_header(token)?;
         let kid = header
             .kid
@@ -27,12 +29,21 @@ impl JwtVerifier {
 
         let mut last_error = None;
         for issuer in &self.jwks {
-            match issuer.verify(header.alg, &kid, token).await {
-                Ok(true) => return Ok(()),
+            match issuer.verify(api, header.alg, &kid, token).await {
+                Ok(true) => {
+                    return Ok(());
+                }
                 Ok(false) => {}
                 Err(error) => last_error = Some(error),
             }
         }
+
+        info!(
+            audit=true,
+            auth_type="oidc",
+            allowed=false,
+            api_name=%api.name()
+        );
 
         if let Some(error) = last_error {
             return Err(error);
