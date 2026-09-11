@@ -195,18 +195,29 @@ api = "anthropic"
 |---|---:|---|
 | `issuer` | はい | Issuer URL。`/.well-known/openid-configuration` で Discovery Document を提供する必要があります。 |
 | `audiences` | はい | 許可する `aud` クレーム。 |
-| `subjects` | いいえ | 許可する `sub` クレーム。省略時は任意の Subject を許可。 |
+| `algorithms` | はい | 許可する JWT 署名アルゴリズム。例: `RS256`、`ES256`、`HS256`。 |
+| `access_rules` | はい | Claim に基づく API アクセスルール。1 件以上必要です。 |
 | `cache_ttl` | いいえ | JWKS キャッシュ期間。`30m`、`1h`、`12h` など。デフォルトは `12h`。 |
 
 ```toml
 [[oidc]]
 issuer = "https://auth.example.com"
 audiences = ["llm-service"]
-subjects = ["user-123", "service-account-abc"]
+algorithms = ["RS256", "ES256"]
 cache_ttl = "6h"
+
+[[oidc.access_rules]]
+claims = { sub = "user-123" }
+allowed_apis = ["openai/chat-completions"]
+
+[[oidc.access_rules]]
+claims = { department = "research", groups = "llm-admins" }
+allowed_apis = ["openai/chat-completions", "openai/models"]
 ```
 
-JWT には `kid`、`sub`、`aud`、`iss`、`exp` が必要です。起動時にキーを取得し、キャッシュが古くなった場合に更新します。未知の `kid` を検出した場合も、レート制限付きで更新を試みます。
+アクセスルール内のすべての Claim が一致する必要があり、いずれかのルールが一致すれば対象 API へのアクセスを許可します。期待値がスカラーの場合は配列 Claim の要素にも一致するため、`groups = "llm-admins"` は `"groups": ["users", "llm-admins"]` に一致します。ネストした Claim は `realm.role` のようなドット区切り、または `/https:~1~1example.com~1roles/0` のような JSON Pointer で指定できます。文字列、数値、真偽値、配列、オブジェクトを使用できます。
+
+JWT には `kid`、`aud`、`iss`、`exp` が必要です。ルールで `sub` を要求できますが、別の Claim で照合するトークンに `sub` は不要です。起動時に JWKS から RSA、EC、HMAC (`oct`)、EdDSA (`OKP`) のキーを取得し、キャッシュが古くなった場合に更新します。未知の `kid` を検出した場合も、レート制限付きで更新を試みます。
 
 ### 完全な設定例
 
@@ -229,7 +240,12 @@ allowed_apis = ["openai/chat-completions", "custom/rerank"]
 [[oidc]]
 issuer = "https://auth.example.com"
 audiences = ["llm-service"]
+algorithms = ["RS256"]
 cache_ttl = "12h"
+
+[[oidc.access_rules]]
+claims = { sub = "user-123" }
+allowed_apis = ["openai/chat-completions", "custom/rerank"]
 ```
 
 ## リバースプロキシとの連携

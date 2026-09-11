@@ -195,18 +195,29 @@ Each `[[oidc]]` entry configures one issuer:
 |---|---:|---|
 | `issuer` | Yes | Issuer URL. Its discovery document must be available at `/.well-known/openid-configuration`. |
 | `audiences` | Yes | Accepted `aud` claim values. |
-| `subjects` | No | Accepted `sub` claim values. Omit to allow any subject. |
+| `algorithms` | Yes | Accepted JWT signature algorithms, such as `RS256`, `ES256`, or `HS256`. |
+| `access_rules` | Yes | Claim-based API access rules. At least one rule is required. |
 | `cache_ttl` | No | JWKS cache lifetime such as `30m`, `1h`, or `12h`; defaults to `12h`. |
 
 ```toml
 [[oidc]]
 issuer = "https://auth.example.com"
 audiences = ["llm-service"]
-subjects = ["user-123", "service-account-abc"]
+algorithms = ["RS256", "ES256"]
 cache_ttl = "6h"
+
+[[oidc.access_rules]]
+claims = { sub = "user-123" }
+allowed_apis = ["openai/chat-completions"]
+
+[[oidc.access_rules]]
+claims = { department = "research", groups = "llm-admins" }
+allowed_apis = ["openai/chat-completions", "openai/models"]
 ```
 
-JWTs must include `kid`, `sub`, `aud`, `iss`, and `exp`. The verifier loads keys during startup, refreshes stale keys, and attempts a rate-limited refresh when it encounters an unknown `kid`.
+Every claim in an access rule must match, and any matching rule can grant access to the requested API. A scalar expected value also matches an element in an array claim, so `groups = "llm-admins"` matches `"groups": ["users", "llm-admins"]`. Use dot-separated selectors such as `realm.role`, or a JSON Pointer such as `/https:~1~1example.com~1roles/0`, for nested claims. String, number, boolean, array, and object values are supported.
+
+JWTs must include `kid`, `aud`, `iss`, and `exp`. A rule can require `sub`, but tokens matched through other claims do not need it. The verifier loads RSA, EC, HMAC (`oct`), and EdDSA (`OKP`) keys from JWKS during startup, refreshes stale keys, and attempts a rate-limited refresh when it encounters an unknown `kid`.
 
 ### Complete example
 
@@ -229,7 +240,12 @@ allowed_apis = ["openai/chat-completions", "custom/rerank"]
 [[oidc]]
 issuer = "https://auth.example.com"
 audiences = ["llm-service"]
+algorithms = ["RS256"]
 cache_ttl = "12h"
+
+[[oidc.access_rules]]
+claims = { sub = "user-123" }
+allowed_apis = ["openai/chat-completions", "custom/rerank"]
 ```
 
 ## Reverse proxy integration

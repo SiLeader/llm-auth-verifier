@@ -13,6 +13,12 @@ impl JwtVerifier {
     pub async fn load(config: Vec<JwtConfig>) -> anyhow::Result<Self> {
         let mut jwks = Vec::with_capacity(config.len());
         for cfg in config {
+            if cfg.algorithms.is_empty() {
+                anyhow::bail!("OIDC issuer {} has no allowed algorithms", cfg.issuer);
+            }
+            if cfg.access_rules.is_empty() {
+                anyhow::bail!("OIDC issuer {} has no access rules", cfg.issuer);
+            }
             let downloader = JwkDownloader::new(&cfg.issuer)?;
             let keys = downloader.load().await?;
             let iss = JwkIssuer::new(cfg, keys);

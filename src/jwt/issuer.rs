@@ -3,7 +3,6 @@ use crate::jwt::JwtConfig;
 use crate::jwt::download::JwkDownloader;
 use chrono::{DateTime, Duration, Utc};
 use jsonwebtoken::Algorithm;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -25,11 +24,6 @@ struct KeyCache {
     last_fetched: DateTime<Utc>,
     last_refresh_attempt: Option<DateTime<Utc>>,
     keys: HashMap<String, jsonwebtoken::DecodingKey>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Claims {
-    sub: String,
 }
 
 impl JwkIssuer {
@@ -58,6 +52,14 @@ impl JwkIssuer {
         kid: &str,
         token: &str,
     ) -> anyhow::Result<bool> {
+        if !self.config.algorithms.contains(&alg) {
+            anyhow::bail!(
+                "Algorithm {:?} is not allowed for issuer {}",
+                alg,
+                self.config.issuer
+            );
+        }
+
         if let Err(error) = self.refresh_if_stale().await {
             warn!(
                 "Failed to refresh stale keys for issuer {}: {}",
@@ -86,34 +88,45 @@ impl JwkIssuer {
                 let mut v = jsonwebtoken::Validation::new(alg);
                 v.set_audience(&self.config.audiences);
                 v.set_issuer(&[&self.config.issuer]);
-                v.set_required_spec_claims(&["sub", "aud", "iss", "exp"]);
+                v.set_required_spec_claims(&["aud", "iss", "exp"]);
                 v.validate_exp = true;
                 v.validate_nbf = true;
                 v.validate_aud = true;
                 v
             };
             let claims =
-                jsonwebtoken::decode::<Claims>(token, decoding_key, &validation).map_err(|e| {
-                    anyhow::anyhow!(
-                        "Token verification failed for issuer {}: {}",
-                        self.config.issuer,
-                        e
-                    )
-                })?;
+                jsonwebtoken::decode::<serde_json::Value>(token, decoding_key, &validation)
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "Token verification failed for issuer {}: {}",
+                            self.config.issuer,
+                            e
+                        )
+                    })?;
 
-            if let Some(subjects) = &self.config.subjects
-                && !subjects.contains(&claims.claims.sub)
+            if !self
+                .config
+                .access_rules
+                .iter()
+                .any(|rule| rule.allows(api.name(), &claims.claims))
             {
                 anyhow::bail!(
-                    "Token claims do not match expected values for issuer {}",
+                    "Token claims are not allowed to access API {} for issuer {}",
+                    api.name(),
                     self.config.issuer
                 );
             }
 
+            let subject = claims
+                .claims
+                .get("sub")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<no-subject>");
+
             info!(
                 audit=true,
                 issuer=%self.name(),
-                name=%claims.claims.sub,
+                name=%subject,
                 auth_type="oidc",
                 allowed=true,
                 api_name=%api.name()
@@ -198,12 +211,14 @@ impl JwkIssuer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jwt::AccessRule;
     use axum::Json;
     use axum::Router;
     use axum::http::StatusCode;
     use axum::routing::get;
+    use jsonwebtoken::{EncodingKey, Header};
     use serde_json::{Value, json};
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Notify;
     use tokio::task::JoinHandle;
@@ -267,11 +282,110 @@ mod tests {
             JwtConfig {
                 issuer,
                 audiences: vec!["audience".to_owned()],
-                subjects: Some(HashSet::from(["subject".to_owned()])),
+                algorithms: HashSet::from([Algorithm::RS256]),
+                access_rules: vec![AccessRule {
+                    claims: HashMap::from([("sub".to_owned(), json!("subject"))]),
+                    allowed_apis: HashSet::from(["openai/chat-completions".to_owned()]),
+                }],
                 cache_ttl: None,
             },
             keys,
         )
+    }
+
+    fn signed_token(algorithm: Algorithm, claims: Value) -> String {
+        let mut header = Header::new(algorithm);
+        header.kid = Some("test-key".to_owned());
+        jsonwebtoken::encode(&header, &claims, &EncodingKey::from_secret(b"secret")).unwrap()
+    }
+
+    #[tokio::test]
+    async fn claim_rules_limit_each_identity_to_its_apis() {
+        let mut issuer = issuer_with_keys(
+            "https://auth.example.com".to_owned(),
+            HashMap::from([(
+                "test-key".to_owned(),
+                jsonwebtoken::DecodingKey::from_secret(b"secret"),
+            )]),
+        );
+        issuer.config.algorithms = HashSet::from([Algorithm::HS256]);
+        issuer.config.access_rules = vec![
+            AccessRule {
+                claims: HashMap::from([("sub".to_owned(), json!("alice"))]),
+                allowed_apis: HashSet::from(["openai/chat-completions".to_owned()]),
+            },
+            AccessRule {
+                claims: HashMap::from([("department".to_owned(), json!("research"))]),
+                allowed_apis: HashSet::from(["openai/models".to_owned()]),
+            },
+        ];
+        let claims = json!({
+            "sub": "alice",
+            "department": "sales",
+            "aud": "audience",
+            "iss": "https://auth.example.com",
+            "exp": Utc::now().timestamp() + 3600
+        });
+        let token = signed_token(Algorithm::HS256, claims);
+        let chat = AiApi::openai(
+            "openai/chat-completions",
+            axum::http::Method::POST,
+            crate::api::ApiPath::exact("/v1/chat/completions"),
+        );
+        let models = AiApi::openai(
+            "openai/models",
+            axum::http::Method::GET,
+            crate::api::ApiPath::exact("/v1/models"),
+        );
+
+        assert!(
+            issuer
+                .verify(&chat, Algorithm::HS256, "test-key", &token)
+                .await
+                .unwrap()
+        );
+        assert!(
+            issuer
+                .verify(&models, Algorithm::HS256, "test-key", &token)
+                .await
+                .is_err()
+        );
+
+        let claims_without_subject = json!({
+            "department": "research",
+            "aud": "audience",
+            "iss": "https://auth.example.com",
+            "exp": Utc::now().timestamp() + 3600
+        });
+        let token_without_subject = signed_token(Algorithm::HS256, claims_without_subject);
+        assert!(
+            issuer
+                .verify(
+                    &models,
+                    Algorithm::HS256,
+                    "test-key",
+                    &token_without_subject
+                )
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_signature_algorithm_outside_allowlist() {
+        let issuer = issuer_with_keys("https://auth.example.com".to_owned(), HashMap::new());
+        let api = AiApi::openai(
+            "openai/chat-completions",
+            axum::http::Method::POST,
+            crate::api::ApiPath::exact("/v1/chat/completions"),
+        );
+
+        assert!(
+            issuer
+                .verify(&api, Algorithm::HS256, "test-key", "token")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
