@@ -12,7 +12,7 @@ pub struct Config {
     #[serde(default)]
     pub oidc: Vec<JwtConfig>,
     #[serde(default)]
-    pub api: ApiConfig,
+    pub api: Option<ApiConfig>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Deserialize)]

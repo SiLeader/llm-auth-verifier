@@ -1,3 +1,4 @@
+use crate::commands::SubCommand;
 use crate::config::Config;
 use crate::verifier::Verifier;
 use crate::verifier_endpoint::verify_auth;
@@ -17,8 +18,8 @@ mod verifier_endpoint;
 
 #[derive(Debug, clap::Parser)]
 struct Args {
-    #[arg(long, help = "Print configuration for Caddy")]
-    caddy: bool,
+    #[clap(subcommand)]
+    subcmd: Option<SubCommand>,
 
     #[arg(long, help = "Listen host and port", default_value = "127.0.0.1:9731")]
     listen: String,
@@ -31,16 +32,12 @@ struct Args {
     config: String,
 }
 
-fn caddy_config(listen: &str) -> String {
-    format!("forward_auth {listen} {{\n    uri /verify\n}}")
-}
-
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
 
-    if args.caddy {
-        println!("{}", caddy_config(&args.listen));
+    if let Some(subcmd) = args.subcmd {
+        subcmd.handle(&args.listen);
         return;
     }
 
@@ -79,21 +76,5 @@ async fn main() {
     if let Err(e) = axum::serve(listener, app).await {
         error!("{e}");
         std::process::exit(1);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::caddy_config;
-
-    #[test]
-    fn caddy_config_uses_supported_forward_auth_subdirectives() {
-        let config = caddy_config("llm-auth-verifier:9731");
-
-        assert_eq!(
-            config,
-            "forward_auth llm-auth-verifier:9731 {\n    uri /verify\n}"
-        );
-        assert!(!config.contains("header_up"));
     }
 }

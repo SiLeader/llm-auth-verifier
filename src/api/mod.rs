@@ -14,7 +14,7 @@ mod predefined;
 pub use definition::*;
 pub use detector::*;
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ApiConfig {
     provider: Option<Provider>,
     #[serde(default)]
@@ -36,6 +36,16 @@ struct CustomApi {
 enum PathType {
     Exact,
     Regex,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            provider: Some(Provider::LlamaCpp),
+            custom_apis: vec![],
+            named_apis: vec![],
+        }
+    }
 }
 
 impl ApiConfig {

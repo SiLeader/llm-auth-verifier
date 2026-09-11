@@ -16,7 +16,7 @@ pub struct Verifier {
 
 impl Verifier {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
-        let api_detector = ApiDetector::try_new(config.api)?;
+        let api_detector = ApiDetector::try_new(config.api.unwrap_or_default())?;
         let token_verifier = TokenVerifier::try_new(config.tokens)?;
         let jwt_verifier = JwtVerifier::load(config.oidc).await?;
         Ok(Self {

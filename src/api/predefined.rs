@@ -79,6 +79,22 @@ impl Default for PredefinedApis {
                 ),
                 AiApiWithProvider::new(
                     AiApi::openai(
+                        "openai/chat-completions-control",
+                        Method::POST,
+                        ApiPath::exact("/v1/chat/completions/control"),
+                    ),
+                    &[Provider::LlamaCpp],
+                ),
+                AiApiWithProvider::new(
+                    AiApi::openai(
+                        "openai/chat-completions-input-tokens",
+                        Method::POST,
+                        ApiPath::exact("/v1/chat/completions/input_tokens"),
+                    ),
+                    &[Provider::LlamaCpp],
+                ),
+                AiApiWithProvider::new(
+                    AiApi::openai(
                         "openai/responses",
                         Method::POST,
                         ApiPath::exact("/v1/responses"),
@@ -89,6 +105,14 @@ impl Default for PredefinedApis {
                         Provider::LmStudio,
                         Provider::VLlm,
                     ],
+                ),
+                AiApiWithProvider::new(
+                    AiApi::openai(
+                        "openai/responses-input-tokens",
+                        Method::POST,
+                        ApiPath::exact("/v1/responses/input_tokens"),
+                    ),
+                    &[Provider::LlamaCpp],
                 ),
                 AiApiWithProvider::new(
                     AiApi::openai(
@@ -151,6 +175,19 @@ impl Default for PredefinedApis {
                         "anthropic/messages",
                         Method::POST,
                         ApiPath::exact("/v1/messages"),
+                    ),
+                    &[
+                        Provider::LlamaCpp,
+                        Provider::Ollama,
+                        Provider::LmStudio,
+                        Provider::VLlm,
+                    ],
+                ),
+                AiApiWithProvider::new(
+                    AiApi::anthropic(
+                        "anthropic/messages-count-tokens",
+                        Method::POST,
+                        ApiPath::exact("/v1/messages/count_tokens"),
                     ),
                     &[
                         Provider::LlamaCpp,
