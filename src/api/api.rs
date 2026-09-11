@@ -52,6 +52,14 @@ impl AiApi {
         self.api_type
     }
 
+    pub fn method(&self) -> &Method {
+        &self.method
+    }
+
+    pub fn path(&self) -> &ApiPath {
+        &self.path
+    }
+
     pub fn matches(&self, method: &Method, path: &str) -> bool {
         if self.method != method {
             return false;

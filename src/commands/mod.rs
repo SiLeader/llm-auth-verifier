@@ -1,10 +1,12 @@
 use crate::commands::caddy_config::CaddyConfigArgs;
 use crate::commands::nginx_config::NginxConfigArgs;
+use crate::commands::predefined_apis::PredefinedApis;
 use crate::commands::traefik_config::TraefikConfigArgs;
 use clap::Subcommand;
 
 mod caddy_config;
 mod nginx_config;
+mod predefined_apis;
 mod traefik_config;
 
 #[allow(clippy::enum_variant_names)]
@@ -13,6 +15,7 @@ pub(crate) enum SubCommand {
     CaddyConfig(CaddyConfigArgs),
     TraefikConfig(TraefikConfigArgs),
     NginxConfig(NginxConfigArgs),
+    PredefinedApis(PredefinedApis),
 }
 
 impl SubCommand {
@@ -26,6 +29,9 @@ impl SubCommand {
             }
             SubCommand::NginxConfig(c) => {
                 c.handle(listen);
+            }
+            SubCommand::PredefinedApis(c) => {
+                c.handle();
             }
         }
     }

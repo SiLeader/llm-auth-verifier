@@ -1,7 +1,7 @@
 use clap::Parser;
 
 #[derive(Debug, Parser)]
-pub(crate) struct CaddyConfigArgs {}
+pub(crate) struct CaddyConfigArgs;
 
 impl CaddyConfigArgs {
     pub(super) fn handle(self, listen: &str) {

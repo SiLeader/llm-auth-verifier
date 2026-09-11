@@ -3,6 +3,7 @@ use axum::http::Method;
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Clone)]
 pub struct PredefinedApis {
@@ -19,7 +20,7 @@ pub enum Provider {
 }
 
 #[derive(Debug, Clone)]
-struct AiApiWithProvider {
+pub struct AiApiWithProvider {
     providers: HashSet<Provider>,
     api: AiApi,
 }
@@ -30,6 +31,30 @@ impl AiApiWithProvider {
             providers: providers.iter().cloned().collect(),
             api,
         }
+    }
+
+    pub fn name(&self) -> &str {
+        self.api.name()
+    }
+
+    pub fn api(&self) -> &AiApi {
+        &self.api
+    }
+
+    pub fn providers(&self) -> &HashSet<Provider> {
+        &self.providers
+    }
+}
+
+impl Display for Provider {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Provider::LlamaCpp => "llama-cpp",
+            Provider::Ollama => "ollama",
+            Provider::LmStudio => "lm-studio",
+            Provider::VLlm => "v-llm",
+        };
+        write!(f, "{}", value)
     }
 }
 
@@ -48,6 +73,18 @@ impl PredefinedApis {
             .filter(|a| names.contains(a.api.name()))
             .map(|a| a.api.clone())
             .collect()
+    }
+
+    pub fn list(&self, provider: Option<Provider>) -> Vec<AiApiWithProvider> {
+        match provider {
+            Some(provider) => self
+                .apis
+                .iter()
+                .filter(|api| api.providers.contains(&provider))
+                .cloned()
+                .collect(),
+            None => self.apis.clone(),
+        }
     }
 }
 

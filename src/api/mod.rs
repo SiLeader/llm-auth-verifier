@@ -9,7 +9,7 @@ mod builder;
 #[path = "api.rs"]
 mod definition;
 mod detector;
-mod predefined;
+pub mod predefined;
 
 pub use definition::*;
 pub use detector::*;

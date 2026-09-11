@@ -1,7 +1,7 @@
 use clap::Parser;
 
 #[derive(Debug, Parser)]
-pub(crate) struct NginxConfigArgs {}
+pub(crate) struct NginxConfigArgs;
 
 impl NginxConfigArgs {
     pub(super) fn handle(self, listen: &str) {
